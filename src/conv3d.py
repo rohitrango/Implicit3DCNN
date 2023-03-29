@@ -6,51 +6,63 @@ from torch import nn
 from torch.nn import functional as F
 from torch.autograd import Function
 from backend import _backend
+import time
 
 class _abstract_conv3d(Function):
     @staticmethod
-    def forward(ctx, input, offset, weight, bias):
-        ctx.save_for_backward(input, offset, weight, bias)
-        output = _backend.abstract_conv3d_forward(input, offset, weight, bias)
+    def forward(ctx, input, output, offsets, resolutions, weight, bias, num_levels, hashmap_size):
+        # save context
+        output = _backend.abstract_conv3d_forward(input, output, offsets, resolutions, weight, bias, num_levels, hashmap_size)
         return output
     
     @staticmethod
     def backward(ctx, grad_outputs):
         return None
 
-
 class AbstractConv3D(nn.Module):
     ''' Actual nn Module that implements the 3D convolution layer'''
-    def __init__(self, channels_in, channels_out, resolutions, offsets, kernel_size, bias=True, stride=1, padding=0, dilation=1, groups=1):
+    def __init__(self, channels_in, channels_out, resolutions, offsets, kernel_size, bias=True, num_levels=16,
+                 log_hashmap_size=19):
         super().__init__()
         self.channels_in = channels_in
         self.channels_out = channels_out
-        # load extra params just in case        
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
+        # hash encoding params
+        self.num_levels = num_levels
+        self.hashmap_size = int(2**log_hashmap_size)
         # load weights
         if isinstance(kernel_size, int):
             kernel_size = (kernel_size, kernel_size, kernel_size)
         else:
-            assert len(kernel_size) == 3, "Input a "
+            assert len(kernel_size) == 3, "kernel_size should be int or tuple/list of length 3"
         # self.resolutions = resolutions   # list of grid sizes/resolutions
         # self.offsets = offsets           # list of offsets, should be int32
         self.register_buffer('resolutions', torch.tensor(resolutions, dtype=torch.int32))
         self.register_buffer('offsets', torch.tensor(offsets, dtype=torch.int32))
         # load weights now
-        self.register_parameter('weight', nn.Parameter(torch.Tensor(channels_out, channels_in, *kernel_size)))
-        self.register_parameter('bias', nn.Parameter(torch.Tensor(channels_out)) if bias else None)
-
+        # self.register_parameter('weight', nn.Parameter(torch.Tensor(num_levels, channels_in, channels_out, *kernel_size)))
+        self.register_parameter('weight', nn.Parameter(torch.Tensor(num_levels, *kernel_size, channels_out, channels_in)))   # keep channels_in at the end to 
+        self.register_parameter('bias', nn.Parameter(torch.Tensor(num_levels, channels_out)) if bias else None)
 
     def forward(self, input):
-        return _abstract_conv3d.apply(input, self.weight, self.weight, self.bias)
+        ''' forward pass 
+        input: (B, N, C_in)
+        '''
+        batch_size, num_embedding = input.shape[:2]
+        output = torch.zeros((batch_size, num_embedding, self.channels_out), device=input.device, dtype=input.dtype)
+        return _abstract_conv3d.apply(input, output, self.offsets, self.resolutions, self.weight, self.bias, self.num_levels, self.hashmap_size)
 
 ## Check this
 if __name__ == '__main__':
-    layer = AbstractConv3D(3, 16, [16, 32, 64], [0, 0, 0], 3).cuda()
-    input = torch.rand(1, 3, 16, 16, 16).cuda()
-    output = layer(input)
+    import gridencoder as ge
+    encoder = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True).cuda()
+    embed = encoder.embeddings[None]  # [1, N, 2]
+    # embed = embed.expand(32, -1, -1).contiguous()
+    resolutions = encoder.resolutions
+    offsets = encoder.offsets
+    print(embed.shape, resolutions.shape, offsets.shape)
+
+    layer = AbstractConv3D(2, 32, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=19).cuda()
+    a = time.time()
+    output = layer(embed)
+    print(time.time() - a)
     print(output.shape)
-    print(output - input)

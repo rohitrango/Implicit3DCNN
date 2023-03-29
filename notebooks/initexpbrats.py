@@ -156,7 +156,7 @@ if __name__ == '__main__':
     # get all t1 files
     t1files = list(map(lambda x: glob(osp.join(x, '*_t1.nii.gz'))[0], paths))
     all_psnrs = []
-    for num_images in range(1, 26):
+    for num_images in range(25, 26):
         net = ImplicitWrapper(num_encoders=num_images).cuda()
         psnrs = training_loop_multi_image(net, 30000, 5000, num_images, diff_optims=True, silent=False)
         all_psnrs.append(psnrs)
@@ -172,4 +172,4 @@ if __name__ == '__main__':
     #axs[0].set_ylabel('PSNR')
     #axs[0].set_title('decoder layers=1')
     #plt.show()
-    print(np.around(psnrs, 3))
+    print(np.around(all_psnrs, 3))
