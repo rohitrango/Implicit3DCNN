@@ -98,12 +98,14 @@ __global__ void abstract_conv3d_forward_kernel_v2(
         int local_n = n - offset_lvl;
         int lvl_res = resolutions[level];
         int lvl_res3 = lvl_res*lvl_res*lvl_res;
+        int iosize = input_channels*output_channels;
 
         // 512 + 64 
         __shared__ scalar_t weight_[THREADS];
         __shared__ scalar_t res_[THREADS];
         __shared__ scalar_t bias_[64];
         __shared__ scalar_t inp_[64];
+        // __shared__ scalar_t start_cin;
 
         if(threadIdx.x < output_channels) {   // load bias weights directly
             bias_[threadIdx.x] = bias[level*output_channels + threadIdx.x];
@@ -112,13 +114,14 @@ __global__ void abstract_conv3d_forward_kernel_v2(
         __syncthreads();
 
         // assuming c_out is less than 64, in each subsequent pass, we iterate over
-        // [C_in_min, C_in_max] but all values of C_out
-        while(c_idx < input_channels*output_channels) {    // c_idx = c_in * output_channels + c_out
+        // { ... C_in_set ... } but all values of C_out
+        while(c_idx < iosize) {    // c_idx = c_in * output_channels + c_out
             // get the channel index
-            // int c_out = c_idx % output_channels;
             int c_in = c_idx / output_channels;
             // load weight and bias
-            weight_[threadIdx.x] = weights[level*(kernel_volume*output_channels*input_channels) + kernel_idx*(input_channels*output_channels) + c_idx];
+            weight_[threadIdx.x] = weights[level*(kernel_volume*iosize) + kernel_idx*iosize + c_idx];
+            // if(threadIdx.x == 0)
+            //     start_cin = c_in;
             __syncthreads();
             int x_index;
 
@@ -129,11 +132,6 @@ __global__ void abstract_conv3d_forward_kernel_v2(
                 coord[0] += k1;
                 coord[1] += k2;
                 coord[2] += k3;
-                // now contains the neighbor
-                // if(out_of_bounds(coord, lvl_res)) {
-                //     local_n += hashmap_size;
-                //     continue;
-                // }
                 // for each thread either add or discard
                 if(out_of_bounds(coord, lvl_res)) {
                 }
@@ -142,7 +140,7 @@ __global__ void abstract_conv3d_forward_kernel_v2(
                     x_index = b*(num_embeddings*input_channels) + x_index*input_channels;
                     // read input
                     if(threadIdx.x < input_channels) {
-                        inp_[threadIdx.x] = input[x_index + c_in];
+                        inp_[threadIdx.x] = input[x_index + threadIdx.x];
                     }
                     __syncthreads();
                     // only the first batch gets to pull out the input
@@ -155,12 +153,12 @@ __global__ void abstract_conv3d_forward_kernel_v2(
         }
         // we have res[THREAD] = sum_{partial c_in} w_{c_in, c_out} * x_{c_in} 
         if(threadIdx.x < output_channels) {
-            for(int i=threadIdx.x+output_channels; i<min(output_channels*input_channels, THREADS); i+=output_channels) {
+            for(int i=threadIdx.x+output_channels; i<min(iosize, THREADS); i+=output_channels) {
                 res_[threadIdx.x] += res_[i];
             }
             atomicAdd(output + b*(num_embeddings*output_channels) + n*output_channels + threadIdx.x, res_[threadIdx.x]+bias_[threadIdx.x]);
         }
-        __syncthreads();
+        // __syncthreads();
         n += gridDim.x;
     }
 }
