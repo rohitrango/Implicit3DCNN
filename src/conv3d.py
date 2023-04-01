@@ -77,7 +77,7 @@ if __name__ == '__main__':
     import gridencoder as ge
     L = 19
     encoder = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L).cuda()
-    embed = encoder.embeddings[None] * 10  # [1, N, 2]
+    embed = encoder.embeddings[:, None].contiguous() * 10  # [1, N, 2]
     # embed = embed.expand(4, -1, -1).contiguous()
     resolutions = encoder.resolutions
     offsets = encoder.offsets

@@ -20,7 +20,7 @@ if __name__ == '__main__':
     # layer.bias.data.zero_()
     print(embed.shape)
     a = time.time()
-    output = layer(embed)
+    output = layer(embed.permute(1, 0, 2).contiguous()).permute(1, 0, 2).contiguous()
     print(time.time() - a)
 
     # compare with a regular convolution
