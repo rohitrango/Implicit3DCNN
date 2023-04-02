@@ -193,7 +193,98 @@ __global__ void abstract_conv3d_backward_input_kernel(
     const int num_levels,
     const int hashmap_size
 ) {
-    // do nothing
+    // get starting `n` and kernel index
+    int n = blockIdx.x;
+    int kernel_idx = blockIdx.z;
+    int max_channels = max(input_channels, output_channels);
+    int max_batches_per_block = THREADS / max_channels;      // use this to load dL/dy and x
+    
+    __shared__ scalar_t weight_[64 * 64];
+    __shared__ scalar_t grad_out_[THREADS];
+    __shared__ scalar_t res_[THREADS];
+
+    // keep track of previous level
+    int prev_level = -1;
+    // unravel the kernel_index  (offset by half the kernel size)
+    int kernel_volume = K1*K2*K3;
+    int k1 = (kernel_idx/(K2*K3)) - K1/2;
+    int k2 = ((kernel_idx % (K2*K3))/K3) - K2/2;
+    int k3 = (kernel_idx%K3) - K3/2;
+    int iosize = input_channels*output_channels;
+
+    // this is the composition of (channel_in * channel_out) number (for more coalesced memory access)
+    // get the level of the table
+    while(n < num_embeddings) {
+        int level = get_level(offsets, n, num_levels);  // get the level of the table
+        int offset_lvl = offsets[level];
+        int local_n = n - offset_lvl;
+        int lvl_res = resolutions[level];
+        int lvl_res3 = lvl_res*lvl_res*lvl_res;
+        // this is a bad embedding (padded to make it divisible by 8), skip it
+        if(local_n >= lvl_res3) {
+            n += gridDim.x;
+            continue;
+        }
+        // check if a dL/dy(n-del(x)) exists for dL/dx(n)
+        // for y[n] we found x[n + dx] so for x'[n] we need to find y'[n - dx]
+        int coord[3];
+        int _iter_local_n = local_n;
+        unravel_index(_iter_local_n, lvl_res, coord);
+        coord[0] -= k1;
+        coord[1] -= k2;
+        coord[2] -= k3;
+        while(_iter_local_n < lvl_res3 && out_of_bounds(coord, lvl_res)) {
+            _iter_local_n += hashmap_size;
+            unravel_index(_iter_local_n, lvl_res, coord);
+            coord[0] -= k1;
+            coord[1] -= k2;
+            coord[2] -= k3;
+        }
+        // for this dL/dx(n) we don't have a dL/dy(n-del(x)) so skip it for all batches
+        if(_iter_local_n >= lvl_res3) {
+            n += gridDim.x;
+            continue;
+        }
+        int nbr = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl; // compute neighbor
+        // if we jumped to a new resolution, then load the corresponding weights
+        if(level != prev_level) {
+            for(int i=threadIdx.x; i<iosize; i+=THREADS) {
+                weight_[i] = weights[level*(kernel_volume*iosize) + kernel_idx*iosize + i];
+            }
+        }
+        // update prev level to this one
+        prev_level = level;
+        // load the grad_output
+        int b_idx = threadIdx.x / max_channels;
+        // int c_idx = threadIdx.x % max_channels;
+        __shared__ int start_b;
+        // iterate over batch sizes  [b_0, b_1 .... b_n]
+        int batch_size_div_up = ((batch_size + max_batches_per_block - 1) / max_batches_per_block) * max_batches_per_block;
+        for(int b=b_idx; b < batch_size_div_up; b+=max_batches_per_block) {
+            if(threadIdx.x == 0) {
+                start_b = b;
+            }
+            __syncthreads();
+            int batch_remaining_this_loop = min(max_batches_per_block, batch_size - start_b);   // check how many batches are left in this loop
+            // fetch dL/dy[n-dx]
+            if(threadIdx.x < batch_remaining_this_loop*output_channels) {
+                grad_out_[threadIdx.x] = grad_output[nbr*batch_size*output_channels + start_b*output_channels + threadIdx.x];
+            }
+            __syncthreads();
+            // now compute result
+            if(threadIdx.x < batch_remaining_this_loop*input_channels) {
+                int bidx = threadIdx.x / input_channels;
+                int cidx = threadIdx.x % input_channels; // input channel index
+                res_[threadIdx.x] = 0;
+                for(int i=0; i<output_channels; i++) {
+                    res_[threadIdx.x] += weight_[cidx*output_channels + i] * grad_out_[bidx*output_channels + i];
+                }
+                atomicAdd(&grad_input[n*batch_size*input_channels + bidx*input_channels + cidx], res_[threadIdx.x]);
+            }
+        }
+        // increment the embedding index
+        n += gridDim.x;
+    }
 }
 
 template <typename scalar_t>
@@ -441,6 +532,7 @@ void abstract_conv3d_backward_wrapper(
     scalar_t* __restrict__ grad_input,
     scalar_t* __restrict__ grad_weights,
     scalar_t* __restrict__ grad_bias,
+    const bool inp_requires_grad,
     const scalar_t* __restrict__ input,
     const int* __restrict__ offsets,
     const int* __restrict__ resolutions,
@@ -454,17 +546,18 @@ void abstract_conv3d_backward_wrapper(
     const int num_levels,
     const int hashmap_size
 ) {
-    const dim3 blocks(min(num_embeddings/32, 65536), batch_size, K1*K2*K3);
-    const uint32_t threads = min(THREADS, input_channels*output_channels);
-    // call gradient w.r.t. input
-    abstract_conv3d_backward_input_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
-        grad_output, grad_input, 
-        input, offsets, resolutions, weights, bias,
-        batch_size, num_embeddings, input_channels, output_channels,
-        K1, K2, K3, num_levels, hashmap_size
-    );
-    gpuErrchk(cudaPeekAtLastError());
-    gpuErrchk(cudaDeviceSynchronize());
+    if(inp_requires_grad) {
+        const dim3 blocks(num_embeddings/32, 1, K1*K2*K3);
+        // call gradient w.r.t. input
+        abstract_conv3d_backward_input_kernel<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+            grad_output, grad_input, 
+            input, offsets, resolutions, weights, bias,
+            batch_size, num_embeddings, input_channels, output_channels,
+            K1, K2, K3, num_levels, hashmap_size
+        );
+        gpuErrchk(cudaPeekAtLastError());
+        gpuErrchk(cudaDeviceSynchronize());
+    }
     int weightblocks = K1*K2*K3*num_levels;
     abstract_conv3d_backward_weight_kernel<<<weightblocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
         grad_output, grad_weights, grad_bias,
@@ -539,7 +632,7 @@ torch::Tensor abstract_conv3d_forward(torch::Tensor input, torch::Tensor output,
 }
 
 std::vector<at::optional<torch::Tensor>> abstract_conv3d_backward(torch::Tensor grad_output, torch::Tensor grad_input, torch::Tensor grad_weight, at::optional<torch::Tensor> grad_bias,
-        torch::Tensor input, torch::Tensor offsets, torch::Tensor resolutions,
+        bool inp_requires_grad, torch::Tensor input, torch::Tensor offsets, torch::Tensor resolutions,
         torch::Tensor weight, at::optional<torch::Tensor> bias, int num_levels, int hashmap_size) {
     /* Kernel for backward pass */
     // define extra variables
@@ -556,7 +649,7 @@ std::vector<at::optional<torch::Tensor>> abstract_conv3d_backward(torch::Tensor 
     input.scalar_type(), "abstract_conv3d_backward_wrapper", ([&] {
         abstract_conv3d_backward_wrapper<scalar_t>(
             grad_output.data_ptr<scalar_t>(), grad_input.data_ptr<scalar_t>(), grad_weight.data_ptr<scalar_t>(), grad_bias.has_value() ? grad_bias.value().data_ptr<scalar_t>() : nullptr,
-            input.data_ptr<scalar_t>(), offsets.data_ptr<int>(), resolutions.data_ptr<int>(), weight.data_ptr<scalar_t>(), \
+            inp_requires_grad, input.data_ptr<scalar_t>(), offsets.data_ptr<int>(), resolutions.data_ptr<int>(), weight.data_ptr<scalar_t>(), \
             bias.has_value() ? bias.value().data_ptr<scalar_t>() : nullptr, batch_size, num_embeddings, input_channels, output_channels, k1, k2, k3, num_levels, hashmap_size);
     }));
     // return ret;

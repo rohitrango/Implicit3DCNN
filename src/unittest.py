@@ -62,7 +62,7 @@ def backward_pass_check():
     batch = 1
     # randomly initialize a grid encoder
     encoder = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L).cuda()
-    embed = encoder.embeddings[:, None] * 1e3
+    embed = encoder.embeddings[:, None] * 1e2
     embed = embed.expand(-1, batch, -1).contiguous().detach()  # [N, B, 2]
     resolutions = encoder.resolutions
     offsets = encoder.offsets
@@ -70,7 +70,7 @@ def backward_pass_check():
     # define layer with zero bias
     layer = AbstractConv3D(2, 32, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
     out = layer(embed)
-    (out**2).mean().backward()
+    (out**2 * 1000).mean().backward() 
 
     # conv layer
     our_w_grad = layer.weight.grad.data
@@ -97,11 +97,13 @@ def backward_pass_check():
         conv_bias.requires_grad_(True)
         # get conv output
         conv_out = F.conv3d(embed_lvl, conv_lvl, bias=conv_bias, stride=1, padding=1).permute(0, 4, 3, 2, 1).contiguous()  # [1, r, r, r, 4]
-        (conv_out**2).mean().backward()
+        # (conv_out**2).sum().backward()
+        (conv_out**2 * 1000).mean().backward()
 
         diffwt = conv_lvl.grad.permute(2, 3, 4, 1, 0).contiguous() - our_w_grad[i]
         diffbias = conv_bias.grad - our_b_grad[i]
-        print("diff wt grad: {:04f}, diff bias grad: {:04f}".format(diffwt.abs().max().item(), diffbias.abs().max().item()))
+        print("diff wt grad: {:04f}, diff bias grad: {:04f}, abs wt grad: {:04f}, abs bias grad: {:04f}".format(diffwt.abs().mean().item(), diffbias.abs().mean().item(),
+                                                                                                                conv_lvl.grad.abs().mean().item(), conv_bias.grad.abs().mean().item()))
         print()
 
 

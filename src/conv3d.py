@@ -20,7 +20,7 @@ class _abstract_conv3d(Function):
         :weight: [num_levels, kernel_size, kernel_size, kernel_size, channels_in, channels_out]
         :bias: [num_levels, channels_out]
         '''
-        ctx.save_for_backward(input, offsets, resolutions, weight, bias, torch.tensor(num_levels), torch.tensor(hashmap_size))
+        ctx.save_for_backward(input, offsets, resolutions, weight, bias, torch.tensor(num_levels), torch.tensor(hashmap_size), torch.tensor(input.requires_grad))
         batch_size, num_embedding = input.shape[:2]
         channels_out = weight.shape[-1]
         output = torch.zeros((batch_size, num_embedding, channels_out), device=input.device, dtype=input.dtype)
@@ -35,15 +35,16 @@ class _abstract_conv3d(Function):
 
         :grad_outputs: [batch_size, num_embeddings, channels_out]
         '''
-        input, offsets, resolutions, weight, bias, num_levels, hashmap_size = ctx.saved_tensors
+        input, offsets, resolutions, weight, bias, num_levels, hashmap_size, inp_requires_grad = ctx.saved_tensors
         num_levels = int(num_levels.item())
         hashmap_size = int(hashmap_size.item())
+        inp_requires_grad = bool(inp_requires_grad.item())
         # get outputs
         input_grad = torch.zeros_like(input, dtype=input.dtype, device=input.device)
         weight_grad = torch.zeros_like(weight, dtype=weight.dtype, device=weight.device)
         bias_grad   = torch.zeros_like(bias, dtype=bias.dtype, device=bias.device) if bias is not None else None
         input_grad, weight_grad, bias_grad = _backend.abstract_conv3d_backward(grad_outputs, input_grad, weight_grad, bias_grad, \
-                                                                               input, offsets, resolutions, weight, bias, num_levels, hashmap_size)
+                                                                               inp_requires_grad, input, offsets, resolutions, weight, bias, num_levels, hashmap_size)
         # backward pass
         return input_grad, None, None, weight_grad, bias_grad, None, None
 
@@ -94,6 +95,7 @@ if __name__ == '__main__':
     gt = gt.detach()
 
     layer = AbstractConv3D(2, 4, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
+    layer2 = AbstractConv3D(4, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
     print(layer.weight, layer.bias)
     # a = time.time()
     # output = layer(embed)
@@ -106,7 +108,7 @@ if __name__ == '__main__':
     pbar = tqdm(range(1000))
     for i in pbar:
         optim.zero_grad()
-        output = layer(embed)
+        output = layer2(layer(embed))
         loss = ((output - 0)**2).sum()
         loss.backward()
         optim.step()
