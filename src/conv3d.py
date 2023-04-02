@@ -90,7 +90,7 @@ if __name__ == '__main__':
 
     # get a ground truth
     encoder2 = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L, level_dim=4).cuda()
-    gt = encoder2.embeddings[:, None].contiguous() * 1e3  # [1, N, 2]
+    gt = encoder2.embeddings[:, None].contiguous() * 1e5  # [1, N, 2]
     gt = gt.detach()
 
     layer = AbstractConv3D(2, 4, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
@@ -107,7 +107,7 @@ if __name__ == '__main__':
     for i in pbar:
         optim.zero_grad()
         output = layer(embed)
-        loss = ((output - gt)**2).mean()
+        loss = ((output - 0)**2).sum()
         loss.backward()
         optim.step()
         pbar.set_description("iter: %d, loss: %.4f" % (i, loss.item()))

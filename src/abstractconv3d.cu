@@ -101,16 +101,20 @@ __global__ void abstract_conv3d_forward_kernel_v3(
     int k3 = (kernel_idx%K3) - K3/2;
 
     // this is the composition of (channel_in * channel_out) number (for more coalesced memory access)
-    int c_idx = threadIdx.x;
     // get the level of the table
     while(n < num_embeddings) {
+        int c_idx = threadIdx.x;
         int level = get_level(offsets, n, num_levels);  // get the level of the table
         int offset_lvl = offsets[level];
         int local_n = n - offset_lvl;
         int lvl_res = resolutions[level];
         int lvl_res3 = lvl_res*lvl_res*lvl_res;
         int iosize = input_channels*output_channels;
-
+        // this is a bad embedding (padded to make it divisible by 8), skip it
+        if(local_n >= lvl_res3) {
+            n += gridDim.x;
+            continue;
+        }
         // 512 + 64 
         __shared__ scalar_t weight_[THREADS];
         __shared__ scalar_t res_[THREADS];
