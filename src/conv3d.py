@@ -6,9 +6,30 @@ from torch import nn
 from torch.cuda.amp import custom_bwd, custom_fwd
 from torch.nn import functional as F
 from torch.autograd import Function
-from backend import _backend
+from backend import _backend, _backend_context
 import time
 from tqdm import tqdm
+
+class _abstract_context(Function):
+    @staticmethod
+    @custom_fwd
+    def forward(ctx, input, offsets, resolutions, num_levels, hashmap_size):
+        ctx.save_for_backward(offsets, resolutions, torch.tensor(num_levels), torch.tensor(hashmap_size))
+        output = torch.zeros_like(input, dtype=input.dtype, device=input.device)
+        output = _backend_context.abstract_contextlayer_forward(input, output, offsets, resolutions, num_levels, hashmap_size)
+        return output
+    
+    @staticmethod
+    @custom_bwd
+    def backward(ctx, grad_outputs):
+        offsets, resolutions, num_levels, hashmap_size = ctx.saved_tensors
+        num_levels, hashmap_size = int(num_levels.item()), int(hashmap_size.item())
+        grad_input = torch.zeros_like(grad_outputs, dtype=grad_outputs.dtype, device=grad_outputs.device)
+        grad_input = _backend_context.abstrac_contextlayer_backward(grad_outputs, grad_input, offsets, resolutions, num_levels, hashmap_size)
+        return grad_input
+
+# Get function
+abstractContextFunction = _abstract_context.apply
 
 class _abstract_conv3d(Function):
     @staticmethod
@@ -32,7 +53,6 @@ class _abstract_conv3d(Function):
     @custom_bwd
     def backward(ctx, grad_outputs):
         ''' Backward pass
-
         :grad_outputs: [batch_size, num_embeddings, channels_out]
         '''
         input, offsets, resolutions, weight, bias, num_levels, hashmap_size, inp_requires_grad = ctx.saved_tensors
@@ -50,6 +70,7 @@ class _abstract_conv3d(Function):
         # backward pass
         return input_grad, None, None, weight_grad, bias_grad, None, None
 
+abstractConv3DFunction = _abstract_conv3d.apply
 
 class AbstractConv3D(nn.Module):
     ''' Actual nn Module that implements the 3D convolution layer'''
@@ -71,14 +92,13 @@ class AbstractConv3D(nn.Module):
         self.register_buffer('offsets', offsets.clone().detach().int())
         ### load weights now
         self.register_parameter('weight', nn.Parameter(0.01*torch.randn(num_levels, *kernel_size, channels_in, channels_out)))   # keep channels_in at the end to 
-        # self.register_parameter('bias', nn.Parameter(0.01*torch.randn(num_levels, channels_out)) if bias else None)
         self.register_parameter('bias', nn.Parameter(torch.zeros(num_levels, channels_out)) if bias else None)
 
     def forward(self, input):
         ''' forward pass 
         input: (B, N, C_in)
         '''
-        return _abstract_conv3d.apply(input, self.offsets, self.resolutions, self.weight, self.bias, self.num_levels, self.hashmap_size)
+        return abstractConv3DFunction(input, self.offsets, self.resolutions, self.weight, self.bias, self.num_levels, self.hashmap_size)
 
 ## Check this
 if __name__ == '__main__':
@@ -95,11 +115,20 @@ if __name__ == '__main__':
 
     # get a ground truth
     encoder2 = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L, level_dim=4).cuda()
-    gt = encoder2.embeddings[:, None].contiguous() * 1e3 + 1  # [1, N, 2]
+    gt = encoder2.embeddings[:, None].contiguous() * 1 + 1 # [1, N, 2]
     gt = gt.detach()
 
     layer = AbstractConv3D(2, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
     layer2 = AbstractConv3D(8, 4, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
+
+    a = time.time()
+    output = abstractContextFunction(gt, offsets, resolutions, 16, 2**L)
+    print(time.time() - a)
+    print("done.")
+    print(output)
+    # print(output.min(), output.max(), output.shape, embed.min(), embed.max(), embed.shape)
+    input()
+
 
     # compute time
     # embed = embed.expand(-1, 32, -1).contiguous()
