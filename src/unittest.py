@@ -25,8 +25,7 @@ def profiler_check():
     a = time.time()
     output = layer(embed)  # [B, N, out]
     print(time.time() - a)
-    (output**2).mean().backward()
-    print()
+    (output**2).sum().backward()
 
 def forward_pass_check():
     ''' Check forward pass '''
@@ -87,7 +86,7 @@ def backward_pass_check():
     encoder = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L).cuda()
     embed = encoder.embeddings[:, None] * 1e2
     embed = embed.expand(-1, batch, -1).contiguous().detach()
-    # embed.requires_grad = True
+    embed.requires_grad = True
     ## store resolutions and offsets
     resolutions = encoder.resolutions
     offsets = encoder.offsets
