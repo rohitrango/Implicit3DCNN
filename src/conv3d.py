@@ -43,10 +43,10 @@ class _abstract_conv3d(Function):
         input_grad = torch.zeros_like(input, dtype=input.dtype, device=input.device)
         weight_grad = torch.zeros_like(weight, dtype=weight.dtype, device=weight.device)
         bias_grad   = torch.zeros_like(bias, dtype=bias.dtype, device=bias.device) if bias is not None else None
-        a = time.time()
+        # a = time.time()
         input_grad, weight_grad, bias_grad = _backend.abstract_conv3d_backward(grad_outputs, input_grad, weight_grad, bias_grad, \
                                                                                inp_requires_grad, input, offsets, resolutions, weight, bias, num_levels, hashmap_size)
-        print("backward time: ", time.time() - a)
+        # print("backward time: ", time.time() - a)
         # backward pass
         return input_grad, None, None, weight_grad, bias_grad, None, None
 
@@ -121,12 +121,13 @@ if __name__ == '__main__':
     # print(layer2.weight.abs().mean(), layer2.bias)
     # print(output)
 
-    optim = torch.optim.AdamW(list(layer.parameters()), lr=1e-2)
+    # optim = torch.optim.AdamW(list(layer.parameters()), lr=4e-3)
+    optim = torch.optim.SGD(layer.parameters(), lr=1e-0, momentum=0.9)
     pbar = tqdm(range(300))
     for it in pbar:
         optim.zero_grad()
         output = layer(embed)
-        loss = ((output - 1).abs()).mean() 
+        loss = ((output - 1)**2).mean() 
         loss.backward()
         optim.step()
         pbar.set_description("iter: %d, loss: %.4f" % (it, loss.item()))

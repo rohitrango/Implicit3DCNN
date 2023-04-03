@@ -162,87 +162,57 @@ __global__ void abstract_conv3d_backward_input_kernel(
     const int hashmap_size
 ) {
     // For each block, fetch the embedding id, block number and output
-    int n = blockIdx.x;
-    int b = blockIdx.y;
-    int kernel_idx = blockIdx.z;
-    // unravel the kernel_index  (offset by half the kernel size)
+    int num = batch_size*num_embeddings*input_channels;
     int kernel_volume = K1*K2*K3;
-    int k1 = (kernel_idx/(K2*K3)) - K1/2;
-    int k2 = ((kernel_idx % (K2*K3))/K3) - K2/2;
-    int k3 = (kernel_idx%K3) - K3/2;
     int iosize = input_channels*output_channels;
 
-    // this is the composition of (channel_in * channel_out) number (for more coalesced memory access)
-    // get the level of the table
-    while(n < num_embeddings) {
-        int c_idx = threadIdx.x;
-        int level = get_level(offsets, n, num_levels);  // get the level of the table
+    CUDA_KERNEL_LOOP(index, num) {
+        // get n, batch index, and output channel index
+        int c_in = index % input_channels;
+        int b_idx = (index / input_channels) % batch_size;
+        int n_idx = (index / input_channels) / batch_size;
+        // get level information
+        int level = get_level(offsets, n_idx, num_levels);
         int offset_lvl = offsets[level];
-        int local_n = n - offset_lvl;
+        int local_n = n_idx - offset_lvl;
         int lvl_res = resolutions[level];
         int lvl_res3 = lvl_res*lvl_res*lvl_res;
-        // this is a bad embedding (padded to make it divisible by 8), skip it
-        if(local_n >= lvl_res3) {
-            n += gridDim.x;
+        // if this is a tail end, skip t
+        if(local_n >= lvl_res3)
             continue;
-        }
-        // 512 + 64 
-        __shared__ scalar_t weight_[THREADS];
-        __shared__ scalar_t res_[THREADS];
-        __shared__ scalar_t grad_out_[64];
-        res_[c_idx] = 0;
-        __syncthreads();
-
-        // assuming c_out is less than 64, in each subsequent pass, we iterate over
-        // { ... C_in_set ... } but all values of C_out
-        __shared__ int loopcounter;
-        if(threadIdx.x == 0)
-            loopcounter = -1;
-
-        while(c_idx < iosize) {    // c_idx = c_in * output_channels + c_out
-            // get the channel index
-            int c_in = c_idx / output_channels;
-            // update loopcounter
-            if(threadIdx.x == 0) loopcounter++;
-            // load weight and bias
-            weight_[threadIdx.x] = weights[level*(kernel_volume*iosize) + kernel_idx*iosize + c_idx];
-            __syncthreads();
+        // now we have n, b, c_in --> time to get x'[n, b, cin]
+        scalar_t res = 0;
+        for(int kernel_idx=0; kernel_idx < kernel_volume; kernel_idx++) {
+            // get kernel offset
+            int k1 = (kernel_idx/(K2*K3)) - K1/2;
+            int k2 = ((kernel_idx % (K2*K3))/K3) - K2/2;
+            int k3 = (kernel_idx%K3) - K3/2;
+            // get start weight index (only add (c_in, c_out))
+            const scalar_t *weight_start = weights + level*kernel_volume*iosize + kernel_idx*iosize;
+            // get neighboring index
             int y_index;
             int coord[3];
-            int _iter_local_n = local_n;
-            unravel_index(_iter_local_n, lvl_res, coord);
-            coord[0] -= k1;
-            coord[1] -= k2;
-            coord[2] -= k3;
-            while((_iter_local_n < lvl_res3) && out_of_bounds(coord, lvl_res)) {
-                _iter_local_n += hashmap_size;
-                unravel_index(_iter_local_n, lvl_res, coord);
-                coord[0] -= k1;
-                coord[1] -= k2;
-                coord[2] -= k3;
+            unravel_index(local_n, lvl_res, coord);
+            if(lvl_res3 > hashmap_size) {   // this is a big resolution, simply compute the (x + dx) % T
+                y_index = (local_n + compute_diff_hash(-k1, -k2, -k3, lvl_res, hashmap_size)) % hashmap_size + offset_lvl;
             }
-            if(_iter_local_n < lvl_res3) {
-                y_index = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl; // global offset
-                y_index = y_index*(batch_size*output_channels) + b*output_channels;
-                // read input
-                if(threadIdx.x < output_channels && loopcounter == 0) {
-                    grad_out_[threadIdx.x] = grad_output[y_index + threadIdx.x];
-                }
-                __syncthreads();
-                // only the first threads
-                if(threadIdx.x % output_channels == 0) { // take its c_in and add
-                    for(int i=0; i<output_channels; i++) {
-                        res_[c_in] += weight_[threadIdx.x+i]*grad_out_[i];
-                    }
-                }
+            else {  // only one point corresponds to this n, find it
+                coord[0] -= k1; coord[1] -= k2; coord[2] -= k3;
+                if(out_of_bounds(coord, lvl_res))
+                    y_index = -1;
+                else
+                    y_index = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;
             }
-            c_idx += THREADS;
+            // compute if x_index != -1
+            if(y_index == -1)
+                continue;
+            // loop in for all the x's
+            int grad_out_idx = y_index*(batch_size*output_channels) + b_idx*input_channels;
+            for(int c=0; c<output_channels; c++) {
+                res += weight_start[c_in*output_channels + c] * grad_output[grad_out_idx + c];
+            }
         }
-        // we have res[THREAD] = sum_{partial c_in} w_{c_in, c_out} * x_{c_in} 
-        if(threadIdx.x < input_channels) {
-            atomicAdd(grad_input + b*input_channels + n*batch_size*input_channels + threadIdx.x, res_[threadIdx.x]);
-        }
-        n += gridDim.x;
+        grad_input[n_idx*(batch_size*input_channels) + b_idx*input_channels + c_in] = res;
     }
 }
 
@@ -504,10 +474,9 @@ void abstract_conv3d_backward_wrapper(
     const int hashmap_size
 ) {
     if(inp_requires_grad) {
-        const dim3 blocks(num_embeddings/32, batch_size, K1*K2*K3);
-        const int threads = min(THREADS, input_channels*output_channels);
+        const uint32_t blocks = min(div_up(num_embeddings*batch_size*input_channels, THREADS), 1<<30 - 1);
         // call gradient w.r.t. input
-        abstract_conv3d_backward_input_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
+        abstract_conv3d_backward_input_kernel<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
             grad_output, grad_input, 
             input, offsets, resolutions, weights, bias,
             batch_size, num_embeddings, input_channels, output_channels,
