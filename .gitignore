@@ -3,3 +3,4 @@ torch-ngp
 */.ipynb_checkpoints/
 */__pycache__/
 **/gridencoder
+**/*ncu-rep

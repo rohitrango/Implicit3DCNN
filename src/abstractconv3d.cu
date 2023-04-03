@@ -18,6 +18,7 @@ v2: <B, N, K1,K2,K3> blocks, hopefully faster with lot of coalescing
 #define THREADS 512
 #define CHECK_CUDA(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
+#define div_up(x, n) ((x)+(n)-1)/(n)
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -263,193 +264,64 @@ __global__ void abstract_conv3d_backward_weight_kernel(
     const int num_levels,
     const int hashmap_size
 ) {
-    // // get information about block
+    int iosize = input_channels * output_channels;
+    int num_outputs = num_levels*K1*K2*K3*iosize;
     int kernel_volume = K1*K2*K3;
-    int kernel_idx = blockIdx.x % kernel_volume;
-    int level = blockIdx.x / kernel_volume;
 
-    // // calculate grad of weight[lvl, k1, k2, k3]
-    int k1 = (kernel_idx/(K2*K3)) - K1/2;
-    int k2 = ((kernel_idx % (K2*K3))/K3) - K2/2;
-    int k3 = (kernel_idx%K3) - K3/2;
-    // // from thread index, infer output channel, batch size, etc
-    int channelmax = max(input_channels, output_channels);
-    int channelmin = min(input_channels, output_channels);
-
-    // auxiliary variables (to enable coalesced memory access)
-    int max_ns_per_block = THREADS / (channelmax*batch_size);  
-    int max_batch_sizes_per_block = min(batch_size, THREADS/channelmax);
-    // level variables (starting offset and resolution)
-    int offset_lvl = offsets[level];
-    int lvl_res = resolutions[level];
-    int lvl_res3 = lvl_res*lvl_res*lvl_res;
-    int lvl_size = min(lvl_res3, hashmap_size); /// total number of hash entries in this level
-    int iosize = input_channels*output_channels;
-
-    // get channel index, batch size and embedding index
-    int c_idx = threadIdx.x % channelmax;
-    int b_start = (threadIdx.x/channelmax)%batch_size;
-    int local_n = threadIdx.x / (channelmax*batch_size);
-
-    __shared__ scalar_t grad_weight_[64 * 64];  // max of [input_channels * output_channels] <= 64 * 64
-    __shared__ scalar_t grad_bias_[64];   // [num_lvl, out_channels] 
-    __shared__ scalar_t inp_[THREADS];         // [input_channels]
-    __shared__ scalar_t grad_out_[THREADS];
-
-    // // init grad weight and bias for index [lvl, k1, k2, k3] for weight and index [lvl] for bias
-    for(int i=threadIdx.x; i<iosize; i+=THREADS) {
-        grad_weight_[i] = 0;
-    }
-    if(threadIdx.x < 64)
-        grad_bias_[threadIdx.x] = 0;  // add dL/dy from all n and b
-    __syncthreads();
-
-    __shared__ int current_batch_block_;   // to keep starting batch in sync for all threads (if part of loop)
-    __shared__ int current_n_block_;       // to keep `starting n` in sync for all threads (else part of loop)
-    __shared__ uint8_t valid_n_thread_[THREADS]; // to keep track if this n is valid or not 
-
-    // // if max_ns_per_block = 0, we have big batch size, and therefore we have to loop over n and batch size
-    if(max_ns_per_block == 0) {
-        while(local_n < lvl_size) {
-            // fetch dL/dy[n, b] first
-            for(int b=b_start; b<batch_size; b+=max_batch_sizes_per_block) {
-                // save the starting number 
-                if(threadIdx.x == 0) {
-                    current_batch_block_ = b;
+    CUDA_KERNEL_LOOP(index, num_outputs) {
+        // get all weight indices
+        int c_out = index % output_channels;
+        int c_in  = (index / output_channels) % input_channels;
+        int kernel_idx = (index / input_channels / output_channels) % kernel_volume;
+        int level = (index / input_channels / output_channels / kernel_volume);
+        int lvl_res = resolutions[level];
+        int lvl_res3 = lvl_res*lvl_res*lvl_res;
+        int lvl_offset = offsets[level];
+        // dismantle kernel index
+        int k3 = (kernel_idx % K3) - K3/2;
+        int k2 = ((kernel_idx / K3) % K2) - K2/2;
+        int k1 = (kernel_idx / K3 / K2) - K1/2;
+        // compute dL/dw[lvl, k1, k2, k3, c_in, c_out]
+        scalar_t wt = 0;
+        scalar_t bt = 0;
+        int y_index, x_index;
+        if(lvl_res3 > hashmap_size) {  // this level is too big
+            for(int local_n=0; local_n<hashmap_size; local_n++)  {
+                // compute y_index and x_index
+                y_index = local_n + lvl_offset;
+                x_index = (local_n + compute_diff_hash(k1, k2, k3, lvl_res, hashmap_size)) % hashmap_size + lvl_offset;
+                // iterate over batch size
+                for(int b=0; b<batch_size; b++) {
+                    const scalar_t *g_out_ = grad_output + y_index*(batch_size*output_channels) + b*output_channels;
+                    const scalar_t *inp_   = input + x_index*(batch_size*input_channels) + b*input_channels;
+                    scalar_t _go = g_out_[c_out];
+                    wt += _go * inp_[c_in];
+                    bt += _go;
                 }
-                __syncthreads();
-                if(threadIdx.x < output_channels*max_batch_sizes_per_block) {
-                    int cur_batch_id = threadIdx.x / output_channels + current_batch_block_;
-                    grad_out_[threadIdx.x] = grad_output[(local_n+offset_lvl)*(batch_size*output_channels) + cur_batch_id*output_channels + threadIdx.x%output_channels];
-                }
-                __syncthreads();
-                // now fetch the inputs from locations that contributed to this y_n  (x s.t. h(x) = local_n)
-                int _iter_local_n = local_n;
-                int nbr;
-                int coord[3];
-                unravel_index(_iter_local_n, lvl_res, coord);
-                coord[0] += k1;
-                coord[1] += k2;
-                coord[2] += k3;
-                while(_iter_local_n < lvl_res3 && out_of_bounds(coord, lvl_res)) {
-                    // add the offset
-                    _iter_local_n += hashmap_size;
-                    // compute new neighbor coordinates
-                    unravel_index(_iter_local_n, lvl_res, coord);
-                    coord[0] += k1;
-                    coord[1] += k2;
-                    coord[2] += k3;
-                }
-                // if there is some neighbor that is in bounds, then take the ratio
-                if(_iter_local_n < lvl_res3) {
-                    nbr = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;   // global index of neighbor
-                    if(threadIdx.x < input_channels*max_batch_sizes_per_block) {
-                        int cur_batch_id = threadIdx.x / input_channels + current_batch_block_;
-                        inp_[threadIdx.x] = input[nbr*batch_size*input_channels + cur_batch_id*input_channels + threadIdx.x%input_channels];
-                    }
-                    __syncthreads();
-                    // add it to weights
-                    for(int i=threadIdx.x; i<iosize; i+=THREADS) {
-                        int cout = i % output_channels;
-                        int cin  = i / output_channels;
-                        // add dL/dy[n, b, out] * dL/dx[n, b, in]
-                        for(int _b=0; _b<max_batch_sizes_per_block; _b++) {
-                            grad_weight_[i] += grad_out_[_b*output_channels + cout] * inp_[_b*input_channels + cin];
-                        } 
-                    }
-                }
-                // copy grad bias
-                if(grad_bias && threadIdx.x < output_channels*max_batch_sizes_per_block) {
-                    for(int _b=0; _b<max_batch_sizes_per_block; _b++) {
-                        grad_bias_[threadIdx.x] += grad_out_[_b*output_channels + threadIdx.x];
-                    }
-                }
-                __syncthreads();
             }
-            local_n++;
+        } else {
+            int coord[3];
+            for(int local_n=0; local_n<lvl_res3; local_n++) {
+                // get index of x
+                unravel_index(local_n, lvl_res, coord);
+                coord[0] += k1; coord[1] += k2; coord[2] += k3;
+                if(out_of_bounds(coord, lvl_res))
+                    continue;
+                y_index = local_n + lvl_offset;
+                x_index = compute_ravel_hash(coord, lvl_res, hashmap_size) + lvl_offset; 
+                for(int b=0; b<batch_size; b++) {
+                    const scalar_t *g_out_ = grad_output + y_index*(batch_size*output_channels) + b*output_channels;
+                    const scalar_t *inp_   = input + x_index*(batch_size*input_channels) + b*input_channels;
+                    scalar_t _go = g_out_[c_out];
+                    wt += _go * inp_[c_in];
+                    bt += _go;
+                }    
+            }
         }
-    }
-    else {
-        // updivide the number of entries to a multiple of `max_ns_per_block` because we want all threads to sync
-        int lvl_size_div_up = ((lvl_size + max_ns_per_block - 1) / max_ns_per_block) * max_ns_per_block;
-        while(local_n < lvl_size_div_up) {
-            // this is the number of blocks that are remaining (if there is non divisible by max_ns_per_block), we want to keep track of them
-            if(threadIdx.x == 0) {
-                current_n_block_ = local_n;
-            }
-            __syncthreads();
-            // this variable captures the maximum number of n's to consider
-            int num_n_in_block = min(max_ns_per_block, lvl_res3 - current_n_block_);
-            // fetch dL/dy for all n
-            if(threadIdx.x < output_channels * batch_size * num_n_in_block) {
-                int cur_n_id = threadIdx.x / (output_channels*batch_size) + current_n_block_;
-                int batch_id = (threadIdx.x / output_channels) % batch_size;
-                grad_out_[threadIdx.x] = grad_output[(cur_n_id+offset_lvl)*(batch_size*output_channels) + batch_id*output_channels + threadIdx.x%output_channels];
-            }
-            valid_n_thread_[threadIdx.x] = 0;   // everything is invalid by default
-            inp_[threadIdx.x] = 0;
-            __syncthreads();         
-            // now fetch the inputs from any locations that contributed to this y_n  (x s.t. h(x) = local_n)
-            if(local_n < lvl_size) {
-                int _iter_local_n = local_n;
-                int nbr;
-                int coord[3];
-                unravel_index(_iter_local_n, lvl_res, coord);  // find neighbor
-                coord[0] += k1;
-                coord[1] += k2;
-                coord[2] += k3;
-                while(_iter_local_n < lvl_res3 && out_of_bounds(coord, lvl_res)) {
-                    _iter_local_n += hashmap_size;
-                    unravel_index(_iter_local_n, lvl_res, coord);
-                    coord[0] += k1;
-                    coord[1] += k2;
-                    coord[2] += k3;
-                }
-                // we found a valid index
-                if(_iter_local_n < lvl_res3) {
-                    valid_n_thread_[threadIdx.x] = 1;
-                    nbr = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;   // global index of neighbor
-                    // only first `input_channels` will fetch this
-                    if(c_idx < input_channels) {
-                        inp_[threadIdx.x] = input[nbr*batch_size*input_channels + b_start*input_channels + c_idx];
-                    }
-                }
-            }
-            __syncthreads();
-            // dL/dy are stored in the first ``batch_size * n * output_channels`` blocks of shared memory
-            // however, dL/dx are stored in the ``THREADS`` blocks, padded with `channelmax - c_in` memory 
-
-            // add to weights 
-            // if number of io is large then split the computation across weight indices
-            for(int i=threadIdx.x; i<iosize; i+=THREADS) {
-                int cout = i % output_channels;
-                int cin  = i / output_channels;
-                // for this weight [cin, cout], iterate over batch_size * n
-                // for each dL/dy, see if the `dy/dx` is valid too
-                for(int _bn=0; _bn<batch_size*num_n_in_block; _bn++) {
-                    if(valid_n_thread_[_bn*channelmax + cin])
-                        grad_weight_[i] += grad_out_[_bn*output_channels + cout] * inp_[_bn*channelmax + cin];
-                } 
-            }
-            // TODO: add an `else` case where we have a large batch size
-
-            // copy grad bias
-            if(grad_bias && threadIdx.x < output_channels) {
-                for(int _b=0; _b<batch_size*num_n_in_block; _b++) {
-                    grad_bias_[threadIdx.x] += grad_out_[_b*output_channels + threadIdx.x];
-                }
-            }
-            // move to next set of n's
-            local_n += max_ns_per_block;
-        }
-    }            
-    __syncthreads();
-    // // write values for this level
-    for(int i=threadIdx.x; i<iosize; i+=THREADS) {
-        grad_weight[level*(kernel_volume*iosize) + kernel_idx*iosize + i] = grad_weight_[i];
-    }
-    if(grad_bias && threadIdx.x < output_channels) {
-        grad_bias[level*output_channels + threadIdx.x] = grad_bias_[threadIdx.x];
+        // add to bias only if kernel_idx = 0
+        if(kernel_idx == 0 && grad_bias)
+            grad_bias[level*output_channels + c_out] = bt;
+        grad_weight[level*kernel_volume*iosize + kernel_idx*iosize + c_in*output_channels + c_out] = wt;
     }
 }
 
@@ -470,7 +342,8 @@ void abstract_conv3d_forward_wrapper(
     const int hashmap_size
 ) { 
     // works good!
-    const uint32_t blocks = min((num_embeddings*batch_size*output_channels + THREADS - 1) / THREADS, 1<<30 - 1);
+    // const uint32_t blocks = min((num_embeddings*batch_size*output_channels + THREADS - 1) / THREADS, 1<<30 - 1);
+    const uint32_t blocks = min(div_up(num_embeddings*batch_size*output_channels, THREADS), 1<<30 - 1);
     abstract_conv3d_forward_kernel_v4<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
         input, output, offsets, resolutions, weights, bias,
         batch_size, num_embeddings, input_channels, output_channels,
@@ -514,8 +387,9 @@ void abstract_conv3d_backward_wrapper(
         gpuErrchk(cudaPeekAtLastError());
         gpuErrchk(cudaDeviceSynchronize());
     }
-    int weightblocks = K1*K2*K3*num_levels;
-    abstract_conv3d_backward_weight_kernel<<<weightblocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+    // initialize weight blocks
+    const uint32_t blocks = div_up(num_levels*K1*K2*K3*input_channels*output_channels, THREADS);
+    abstract_conv3d_backward_weight_kernel<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
         grad_output, grad_weights, grad_bias,
         input, offsets, resolutions, weights, bias,
         batch_size, num_embeddings, input_channels, output_channels,
@@ -537,10 +411,6 @@ torch::Tensor abstract_conv3d_forward(torch::Tensor input, torch::Tensor output,
     bias: bias entries (L x C_out)
     num_levels: int (L)
     hashmap_size: int (H)
-    
-    Notes: 
-        - reducing `THREADS` to 32 from 512 led to improved performance, but reducing further down hurt performance
-        - writing loops for `num_embeddings` improved performance (down from 1.7s to 0.63s)
     */
 
     CHECK_CUDA(input);
