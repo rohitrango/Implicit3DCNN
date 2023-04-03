@@ -293,27 +293,27 @@ __global__ void abstract_conv3d_backward_weight_kernel(
                     int cur_batch_id = threadIdx.x / output_channels + current_batch_block_;
                     grad_out_[threadIdx.x] = grad_output[(local_n+offset_lvl)*(batch_size*output_channels) + cur_batch_id*output_channels + threadIdx.x%output_channels];
                 }
-                __syncthreads();
-                // now fetch the inputs from locations that contributed to this y_n  (x s.t. h(x) = local_n)
-                int _iter_local_n = local_n;
+                // now fetch the inputs from locations that contributed to this y_n 
                 int nbr;
                 int coord[3];
-                unravel_index(_iter_local_n, lvl_res, coord);
+                unravel_index(local_n, lvl_res, coord);  // find neighbor
                 coord[0] += k1;
                 coord[1] += k2;
                 coord[2] += k3;
-                while(_iter_local_n < lvl_res3 && out_of_bounds(coord, lvl_res)) {
-                    // add the offset
-                    _iter_local_n += hashmap_size;
-                    // compute new neighbor coordinates
-                    unravel_index(_iter_local_n, lvl_res, coord);
-                    coord[0] += k1;
-                    coord[1] += k2;
-                    coord[2] += k3;
+                if(lvl_res3 > hashmap_size) { // too big, just get index
+                    nbr = (compute_diff_hash(k1, k2, k3, lvl_res, hashmap_size) + local_n) % hashmap_size;
                 }
-                // if there is some neighbor that is in bounds, then take the ratio
-                if(_iter_local_n < lvl_res3) {
-                    nbr = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;   // global index of neighbor
+                else {
+                    if(!out_of_bounds(coord, lvl_res)) {
+                        nbr = compute_ravel_hash(coord, lvl_res, hashmap_size);
+                    }
+                    else {
+                        nbr = -1;
+                    }
+                }
+                // we found a valid index
+                if(nbr != -1) {
+                    nbr = nbr + offset_lvl;   // global index of neighbor
                     if(threadIdx.x < input_channels*max_batch_sizes_per_block) {
                         int cur_batch_id = threadIdx.x / input_channels + current_batch_block_;
                         inp_[threadIdx.x] = input[nbr*batch_size*input_channels + cur_batch_id*input_channels + threadIdx.x%input_channels];
@@ -335,7 +335,6 @@ __global__ void abstract_conv3d_backward_weight_kernel(
                         grad_bias_[threadIdx.x] += grad_out_[_b*output_channels + threadIdx.x];
                     }
                 }
-                __syncthreads();
             }
             local_n++;
         }
@@ -350,7 +349,7 @@ __global__ void abstract_conv3d_backward_weight_kernel(
             }
             __syncthreads();
             // this variable captures the maximum number of n's to consider
-            int num_n_in_block = min(max_ns_per_block, lvl_res3 - current_n_block_);
+            int num_n_in_block = min(max_ns_per_block, lvl_size - current_n_block_);
             // fetch dL/dy for all n
             if(threadIdx.x < output_channels * batch_size * num_n_in_block) {
                 int cur_n_id = threadIdx.x / (output_channels*batch_size) + current_n_block_;
@@ -359,27 +358,29 @@ __global__ void abstract_conv3d_backward_weight_kernel(
             }
             valid_n_thread_[threadIdx.x] = 0;   // everything is invalid by default
             inp_[threadIdx.x] = 0;
-            __syncthreads();         
             // now fetch the inputs from any locations that contributed to this y_n  (x s.t. h(x) = local_n)
             if(local_n < lvl_size) {
-                int _iter_local_n = local_n;
                 int nbr;
                 int coord[3];
-                unravel_index(_iter_local_n, lvl_res, coord);  // find neighbor
+                unravel_index(local_n, lvl_res, coord);  // find neighbor
                 coord[0] += k1;
                 coord[1] += k2;
                 coord[2] += k3;
-                while(_iter_local_n < lvl_res3 && out_of_bounds(coord, lvl_res)) {
-                    _iter_local_n += hashmap_size;
-                    unravel_index(_iter_local_n, lvl_res, coord);
-                    coord[0] += k1;
-                    coord[1] += k2;
-                    coord[2] += k3;
+                if(lvl_res3 > hashmap_size) { // too big, just get index
+                    nbr = (compute_diff_hash(k1, k2, k3, lvl_res, hashmap_size) + local_n) % hashmap_size;
                 }
-                // we found a valid index
-                if(_iter_local_n < lvl_res3) {
+                else {
+                    if(!out_of_bounds(coord, lvl_res)) {
+                        nbr = compute_ravel_hash(coord, lvl_res, hashmap_size);
+                    }
+                    else {
+                        nbr = -1;
+                    }
+                }
+                // we found a valid index, set its index to 1
+                if(nbr != -1) {
                     valid_n_thread_[threadIdx.x] = 1;
-                    nbr = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;   // global index of neighbor
+                    nbr = nbr + offset_lvl;   // global index of neighbor
                     // only first `input_channels` will fetch this
                     if(c_idx < input_channels) {
                         inp_[threadIdx.x] = input[nbr*batch_size*input_channels + b_start*input_channels + c_idx];
@@ -417,10 +418,10 @@ __global__ void abstract_conv3d_backward_weight_kernel(
     __syncthreads();
     // // write values for this level
     for(int i=threadIdx.x; i<iosize; i+=THREADS) {
-        grad_weight[level*(kernel_volume*iosize) + kernel_idx*iosize + i] = grad_weight_[i];
+        grad_weight[level*(kernel_volume*iosize) + kernel_idx*iosize + i] = (scalar_t)grad_weight_[i];
     }
     if(grad_bias && threadIdx.x < output_channels) {
-        grad_bias[level*output_channels + threadIdx.x] = grad_bias_[threadIdx.x];
+        grad_bias[level*output_channels + threadIdx.x] = (scalar_t)grad_bias_[threadIdx.x];
     }
 }
 
@@ -485,14 +486,6 @@ void abstract_conv3d_backward_wrapper(
         gpuErrchk(cudaPeekAtLastError());
         gpuErrchk(cudaDeviceSynchronize());
     }
-    // initialize weight blocks
-    // const uint32_t blocks = div_up(num_levels*K1*K2*K3*input_channels*output_channels, THREADS);
-    // abstract_conv3d_backward_weight_kernel<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
-    //     grad_output, grad_weights, grad_bias,
-    //     input, offsets, resolutions, weights, bias,
-    //     batch_size, num_embeddings, input_channels, output_channels,
-    //     K1, K2, K3, num_levels, hashmap_size
-    // );
     int weightblocks = K1*K2*K3*num_levels;
     abstract_conv3d_backward_weight_kernel<<<weightblocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
         grad_output, grad_weights, grad_bias,

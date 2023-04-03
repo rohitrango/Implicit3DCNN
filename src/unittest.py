@@ -83,9 +83,11 @@ def backward_pass_check():
     ''' check if the backward pass for weights and biases is correct '''
     L = 19
     batch = 1
+    inp_lvl = 2
+    out_lvl = 4
     # randomly initialize a grid encoder
-    encoder = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L).cuda()
-    embed = encoder.embeddings[:, None] * 1e2
+    encoder = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L, level_dim=inp_lvl).cuda()
+    embed = encoder.embeddings[:, None] * 1e4
     embed = embed.expand(-1, batch, -1).contiguous().detach()
     embed.requires_grad = True
     ## store resolutions and offsets
@@ -93,7 +95,7 @@ def backward_pass_check():
     offsets = encoder.offsets
     
     # define layer with zero bias
-    layer = AbstractConv3D(2, 32, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
+    layer = AbstractConv3D(inp_lvl, out_lvl, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
     out = layer(embed)
     (out**2).sum().backward() 
 
@@ -116,7 +118,7 @@ def backward_pass_check():
         if S != r**3:
             break
         # reshape this
-        embed_lvl = embed_lvl.reshape(batch, r, r, r, 2).permute(0, 4, 3, 2, 1).contiguous()  # [1, 2, r, r, r]
+        embed_lvl = embed_lvl.reshape(batch, r, r, r, inp_lvl).permute(0, 4, 3, 2, 1).contiguous()  # [1, 2, r, r, r]
         embed_lvl = embed_lvl.data
         embed_lvl.requires_grad = True
         # get conv
@@ -127,12 +129,11 @@ def backward_pass_check():
         # get conv output
         conv_out = F.conv3d(embed_lvl, conv_lvl, bias=conv_bias, stride=1, padding=1).permute(0, 4, 3, 2, 1).contiguous()  # [1, r, r, r, 4]
         (conv_out**2).sum().backward()
-        # (conv_out**2 ).mean().backward()
 
         with torch.no_grad():
             diffwt = conv_lvl.grad.permute(2, 3, 4, 1, 0).contiguous() - our_w_grad[i]
             diffbias = conv_bias.grad - our_b_grad[i]
-            embedlvlgradflat = embed_lvl.grad.permute(4, 3, 2, 0, 1).contiguous().reshape(-1, batch, 2)
+            embedlvlgradflat = embed_lvl.grad.permute(4, 3, 2, 0, 1).contiguous().reshape(-1, batch, inp_lvl)
             diffembed = embed_grad[offsets[i]:offsets[i]+r**3, :] - embedlvlgradflat
             print(embedlvlgradflat.shape, embed_grad[offsets[i]:offsets[i]+r**3, :].shape)
             print("diff wt grad: {:04f}, diff bias grad: {:04f}, diff embed grad: {:04f}\nabs wt grad: {:04f}, abs bias grad: {:04f}, abs embed grad: {:04f}".format(\

@@ -70,8 +70,9 @@ class AbstractConv3D(nn.Module):
         self.register_buffer('resolutions', resolutions.clone().detach().int())
         self.register_buffer('offsets', offsets.clone().detach().int())
         ### load weights now
-        self.register_parameter('weight', nn.Parameter(0.1*torch.randn(num_levels, *kernel_size, channels_in, channels_out)))   # keep channels_in at the end to 
-        self.register_parameter('bias', nn.Parameter(0.01*torch.randn(num_levels, channels_out)) if bias else None)
+        self.register_parameter('weight', nn.Parameter(0.01*torch.randn(num_levels, *kernel_size, channels_in, channels_out)))   # keep channels_in at the end to 
+        # self.register_parameter('bias', nn.Parameter(0.01*torch.randn(num_levels, channels_out)) if bias else None)
+        self.register_parameter('bias', nn.Parameter(torch.zeros(num_levels, channels_out)) if bias else None)
 
     def forward(self, input):
         ''' forward pass 
@@ -84,7 +85,7 @@ if __name__ == '__main__':
     import gridencoder as ge
     L = 19
     encoder = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L).cuda()
-    embed = encoder.embeddings[:, None].contiguous() * 1e4  # [1, N, 2]
+    embed = encoder.embeddings[:, None].contiguous() * 1e3  # [1, N, 2]
     embed = embed.detach()
     print(embed.min(), embed.max())
     # embed = embed.expand(4, -1, -1).contiguous()
@@ -107,32 +108,44 @@ if __name__ == '__main__':
     print(time.time() - a)
     print(output.min(), output.max(), output.shape)
 
-    # optim = torch.optim.AdamW(list(layer.parameters()) + list(layer2.parameters()), lr=1e-2)
+    optim = torch.optim.Adam(list(layer.parameters()) + list(layer2.parameters()), lr=5e-2)
+    pbar = tqdm(range(200))
+    for it in pbar:
+        optim.zero_grad()
+        out = layer(embed) 
+        output = layer2(F.leaky_relu(out))
+        loss = 0
+        # loss = F.binary_cross_entropy_with_logits(output, output.detach()*0 + 1)
+        for i in range(16):
+            sz = int(min(encoder.max_params, resolutions[i]**3))
+            # loss += ((output[offsets[i]:offsets[i]+sz] - 1)**2).mean()
+            ### cross-entropy loss shows very good performance (with Adam, lr = 5e-2)
+            loss += F.binary_cross_entropy_with_logits(output[offsets[i]:offsets[i]+sz], 0*output[offsets[i]:offsets[i]+sz].detach()+1)
+        loss = loss / 16.0
+        (loss).backward()
+        # loss = ((output - 1)**2).mean() 
+        # loss.backward()
+        optim.step()
+        pbar.set_description("iter: %d, loss: %.6f" % (it, loss.item()))
+    print(layer2.weight.abs().mean(), layer2.bias)
+    print(layer.weight.abs().mean(), layer.bias)
+    print(output)
+
+    # optim = torch.optim.SGD(layer.parameters(), lr=1e-0, momentum=0.9)
+    # optim = torch.optim.Adam(list(layer.parameters()), lr=4e-2)
     # pbar = tqdm(range(300))
     # for it in pbar:
     #     optim.zero_grad()
-    #     out = layer(embed) 
-    #     output = layer2(F.leaky_relu(out))
-    #     # output = layer(embed)
-    #     loss = ((output - 1)**2).mean() 
+    #     output = layer(embed)
+    #     loss = 0
+    #     for i in range(16):
+    #         sz = int(min(encoder.max_params, resolutions[i]**3))
+    #         loss += ((output[offsets[i]:offsets[i]+sz] - 1)**2).mean()
     #     loss.backward()
     #     optim.step()
     #     pbar.set_description("iter: %d, loss: %.4f" % (it, loss.item()))
-    # print(layer2.weight.abs().mean(), layer2.bias)
+    # print(layer.weight.abs().mean(), layer.bias)
     # print(output)
-
-    # optim = torch.optim.AdamW(list(layer.parameters()), lr=4e-3)
-    optim = torch.optim.SGD(layer.parameters(), lr=1e-0, momentum=0.9)
-    pbar = tqdm(range(300))
-    for it in pbar:
-        optim.zero_grad()
-        output = layer(embed)
-        loss = ((output - 1)**2).mean() 
-        loss.backward()
-        optim.step()
-        pbar.set_description("iter: %d, loss: %.4f" % (it, loss.item()))
-    print(layer.weight.abs().mean(), layer.bias)
-    print(output)
 
     # inp = torch.randn(1, 32, 128, 128, 128).cuda()
     # conv = nn.Conv3d(32, 32, 3, padding=1).cuda()
