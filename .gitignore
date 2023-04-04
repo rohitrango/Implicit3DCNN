@@ -4,3 +4,4 @@ torch-ngp
 */__pycache__/
 **/gridencoder
 **/*ncu-rep
+baselines/*
