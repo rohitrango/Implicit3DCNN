@@ -14,7 +14,8 @@ class _abstract_context(Function):
     @staticmethod
     @custom_fwd
     def forward(ctx, input, offsets, resolutions, num_levels, hashmap_size):
-        ctx.save_for_backward(offsets, resolutions, torch.tensor(num_levels), torch.tensor(hashmap_size))
+        if input.requires_grad:
+            ctx.save_for_backward(offsets, resolutions, torch.tensor(num_levels), torch.tensor(hashmap_size))
         output = torch.zeros_like(input, dtype=input.dtype, device=input.device)
         output = _backend_context.abstract_contextlayer_forward(input, output, offsets, resolutions, num_levels, hashmap_size)
         return output
@@ -25,8 +26,8 @@ class _abstract_context(Function):
         offsets, resolutions, num_levels, hashmap_size = ctx.saved_tensors
         num_levels, hashmap_size = int(num_levels.item()), int(hashmap_size.item())
         grad_input = torch.zeros_like(grad_outputs, dtype=grad_outputs.dtype, device=grad_outputs.device)
-        grad_input = _backend_context.abstrac_contextlayer_backward(grad_outputs, grad_input, offsets, resolutions, num_levels, hashmap_size)
-        return grad_input
+        grad_input = _backend_context.abstract_contextlayer_backward(grad_outputs, grad_input, offsets, resolutions, num_levels, hashmap_size)
+        return grad_input, None, None, None, None
 
 # Get function
 abstractContextFunction = _abstract_context.apply

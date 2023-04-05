@@ -147,15 +147,20 @@ def forward_context_check():
     L = 19
     batch = 1
     # randomly initialize a grid encoder
-    encoder = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L).cuda()
+    encoder = ge.GridEncoder(per_level_scale=2, gridtype='tiled', align_corners=True, log2_hashmap_size=L).cuda()
+    # encoder = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L).cuda()
     embed = encoder.embeddings[:, None] * 1e3 # [N, 1, 2]
     embed = embed.expand(-1, batch, -1).contiguous().detach()   # [N, B, 2]
     resolutions = encoder.resolutions
     offsets = encoder.offsets
     # define layer with zero bias
+    print(embed.shape)
+    embed.requires_grad = True
     a = time.time()
     output = abstractContextFunction(embed, offsets, resolutions, 16, 2**L)
     print(time.time() - a)
+    (output**2).sum().backward()
+    pred_grad = embed.grad.data  # store it
 
     ## compare it with interpolation
     for lvl in range(1, 16):
@@ -164,17 +169,31 @@ def forward_context_check():
             break
         # get level from previous level
         rprev = resolutions[lvl-1]
-        embed_lvl = embed[offsets[lvl-1]:offsets[lvl-1]+rprev**3, :].permute(1, 0, 2).contiguous()   # [B, rprev^3, C]
-        embed_lvl = embed_lvl.reshape(batch, rprev, rprev, rprev, 2).permute(0, 4, 3, 2, 1).contiguous()  # [1, 2, r, r, r]
+        embed_lvl_inp = embed[offsets[lvl-1]:offsets[lvl-1]+rprev**3, :].permute(1, 0, 2).contiguous().detach()   # [B, rprev^3, C]
+        embed_lvl_inp.requires_grad = True
+        # convert it and pass it
+        embed_lvl = embed_lvl_inp.reshape(batch, rprev, rprev, rprev, 2).permute(0, 4, 3, 2, 1).contiguous()  # [1, 2, r, r, r]
+        embed_lvl = F.interpolate(embed_lvl, size=r, mode='nearest').permute(0, 4, 3, 2, 1).reshape(batch, r**3, 2).permute(1, 0, 2).contiguous()
         # get output level (which is interpolated version of previous level)
-        output_lvl = output[offsets[lvl]:offsets[lvl]+r**3].permute(1, 0, 2).reshape(batch, r, r, r, 2).permute(0, 4, 3, 2, 1).contiguous()
-        fig, axs = plt.subplots(2, 1)
-        axs[0].imshow(embed_lvl[0, 0, 0, :, :].detach().cpu().numpy(), cmap='jet')
-        axs[1].imshow(output_lvl[0, 0, 0, :, :].detach().cpu().numpy(), cmap='jet')
-        fig.savefig("{lvl}.png".format(lvl=lvl))
-        fig.clf()
-        # meandiff = (output_lvl - output[offsets[lvl]:offsets[lvl]+r**3]).abs().mean().item()
-        # print(output_lvl.shape, output[offsets[lvl]:offsets[lvl]+r**3].shape, meandiff, output_lvl.abs().mean().item())
+        output_lvl = output[offsets[lvl]:offsets[lvl]+r**3]
+        # fig, axs = plt.subplots(1, 2)
+        # axs[0].imshow(embed_lvl[0, 0, 0, :, :].detach().cpu().numpy(), cmap='jet')
+        # axs[1].imshow(output_lvl[0, 0, 0, :, :].detach().cpu().numpy(), cmap='jet')
+        # fig.savefig("{lvl}.png".format(lvl=lvl))
+        # fig.clf()
+        meandiff = (output_lvl - embed_lvl).abs().mean().item()
+        # print(output_lvl.shape, embed_lvl.shape)
+        print("error: {} avg output value: {}".format(meandiff, output_lvl.abs().mean().item()))
+        # take gradients
+        (embed_lvl**2).sum().backward()
+        grad_lvl = embed_lvl_inp.grad.data.permute(1, 0, 2)
+        pred_grad_lvl = pred_grad[offsets[lvl-1]:offsets[lvl-1]+rprev**3]
+        # print(grad_lvl.shape, pred_grad_lvl.shape)
+        meangraddiff = (grad_lvl - pred_grad_lvl).abs().mean().item()
+        print("grad error: {}, mean grad value: {}".format(meangraddiff, grad_lvl.abs().mean().item()))
+        print()
+        
+
 
 
 

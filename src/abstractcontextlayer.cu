@@ -13,6 +13,7 @@
 #define CHECK_CUDA(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define div_up(x, n) ((x)+(n)-1)/(n)
+#define min(a, b) ((a)<(b))?(a):(b)
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -104,24 +105,22 @@ __global__ void abstract_contextlayer_forward_kernel(
             #pragma unroll
             for(int i=0; i<3; i++) 
                 coord_f[i] = (((float)coord[i]) / (lvl_res - 1)) * (lvl_res_prev - 1);   // dividing makes it from [0, 1] and then resized to [0, lvl-1]
-            // given the nearest float coordinates at the previous level 
+            //// given the nearest float coordinates at the previous level, find nearest int pixel location
             #pragma unroll
             for(int i=0; i<3; i++)
                 coord[i] = (int)(coord_f[i] + 0.5 - 1e-6);
             // Get index from x
             int xindex = compute_ravel_hash(coord, lvl_res_prev, hashmap_size) + offset_lvl_prev;
             res += input[xindex*batch_size*input_channels + b_idx*input_channels + c_idx];
-            //// trilinearly interpolate (this is too slow)
-            // #pragma unroll
+            // trilinearly interpolate (this is too slow)
             // for(int nbr=0; nbr<8; nbr++) {
             //     scalar_t wt = 1;
-            //     #pragma unroll
             //     for(int i=0; i<3; i++) {
             //         coord[i] = ((int)floorf(coord_f[i])) + nbr%2;   // if remainder is 0, its floor, else ceil
-            //         wt *= (nbr%2)?(coord[i] + 1 - coord_f[i]):(coord_f[i] - coord[i] + 1);
-            //         nbr /= 2;
+            //         wt *= 1 + ((coord[i] - coord_f[i]))*(nbr%2)?1:-1;
+            //         nbr >>= 1;
             //     }
-            //     if(!out_of_bounds(coord, lvl_res_prev)) {
+            //     if(wt > 0 && !out_of_bounds(coord, lvl_res_prev)) {
             //         int xindex = compute_ravel_hash(coord, lvl_res_prev, hashmap_size) + offset_lvl_prev;
             //         res += wt * input[xindex*batch_size*input_channels + b_idx*input_channels + c_idx];
             //     }
@@ -134,6 +133,79 @@ __global__ void abstract_contextlayer_forward_kernel(
     }
 }
 
+template <typename scalar_t>
+__global__ void abstract_contextlayer_backward_kernel(const scalar_t* grad_output, scalar_t* grad_input, const int *offsets, const int *resolutions,
+            const int batch_size, const int num_embeddings, const int input_channels, const int num_levels, const int hashmap_size) {
+    //
+    int num = batch_size * num_embeddings * input_channels;
+    int output_channels = input_channels;
+    CUDA_KERNEL_LOOP(index, num) {
+        int c_idx = index % output_channels;
+        int b_idx = (index / output_channels) % batch_size;
+        int n_idx = (index / output_channels) / batch_size;
+        // get level and check 
+        int level = get_level(offsets, n_idx, num_levels);
+        // this is the last layer, no context from below, return since there is no more level to consider
+        if(level == num_levels-1)
+            return; 
+        // level related variables 
+        int offset_lvl_next = offsets[level + 1];
+        int lvl_res_next = resolutions[level + 1];
+        int offset_lvl = offsets[level];
+        int local_n = n_idx - offset_lvl;
+        int lvl_res = resolutions[level];
+        int lvl_res3 = lvl_res*lvl_res*lvl_res;
+        // if this is a tail end, skip t
+        if(local_n >= lvl_res3)
+            continue; 
+        // initialize result
+        scalar_t res = 0;
+        int _iter_local_n = local_n;
+        while(_iter_local_n < lvl_res3) {
+            int coord[3];
+            unravel_index(_iter_local_n, lvl_res, coord);  // coord contains the (x, y, z) at level 'l'
+            int coord_fmin[3], coord_fmax[3];    // store min and max from each layer
+            #pragma unroll
+            for(int i=0; i<3; i++) {
+                coord_fmin[i] = (int)ceilf(((float)coord[i] - 0.5 + 1e-6)/(lvl_res - 1)*(lvl_res_next - 1));
+                coord_fmin[i] = max(coord_fmin[i], 0);
+                coord_fmax[i] = (int)floorf(((float)coord[i]+0.5)/(lvl_res - 1)*(lvl_res_next - 1));
+                coord_fmax[i] = min(coord_fmax[i], lvl_res_next-1);
+            }
+            // given these coordinates, add them to result
+            for(int i=coord_fmin[2]; i<=coord_fmax[2]; i++) {
+                for(int j=coord_fmin[1]; j<=coord_fmax[1]; j++) {
+                    for(int k=coord_fmin[0]; k<=coord_fmax[0]; k++) {   // index is (k, j, i) 
+                        coord[0] = k; coord[1] = j; coord[2] = i;
+                        if(!out_of_bounds(coord, lvl_res_next)) {
+                            // fetch this gradient
+                            int index = compute_ravel_hash(coord, lvl_res_next, hashmap_size) + offset_lvl_next;
+                            res += grad_output[index*batch_size*output_channels + b_idx*output_channels + c_idx];
+                        }
+                    }
+                }
+            }
+            // coord_f[i] = ((float)coord[i]) / (lvl_res - 1) * (lvl_res_next - 1);  // float coordinate in next layer
+            // given float coordinates, find all coordinates in next layer that have this as nearest neighbor
+            // update local index
+            _iter_local_n += hashmap_size;
+        }
+        // write the result
+        grad_input[n_idx*batch_size*output_channels + b_idx*output_channels + c_idx] = res;
+    }
+}
+
+template <typename scalar_t>
+void abstract_contextlayer_backward_wrapper(const scalar_t* grad_output, scalar_t* grad_input, const int *offsets, const int *resolutions,
+            const int batch_size, const int num_embeddings, const int input_channels, const int num_levels, const int hashmap_size) {
+    // Simply call the kernel
+    const uint32_t blocks = min(div_up(num_embeddings*batch_size*input_channels, THREADS), 1<<30-1);
+    abstract_contextlayer_backward_kernel<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        grad_output, grad_input, offsets, resolutions, batch_size, num_embeddings, input_channels, num_levels, hashmap_size
+    );
+    gpuErrchk(cudaPeekAtLastError());
+    gpuErrchk(cudaDeviceSynchronize());
+}
 
 template <typename scalar_t>
 void abstract_contextlayer_forward_wrapper(const scalar_t *input, scalar_t *output, const int *offsets, const int *resolutions,
@@ -179,6 +251,15 @@ torch::Tensor abstract_contextlayer_forward(torch::Tensor input, torch::Tensor o
 
 torch::Tensor abstract_contextlayer_backward(torch::Tensor grad_output, torch::Tensor grad_input, 
         torch::Tensor offsets, torch::Tensor resolutions, int num_levels, int hashmap_size) {
-    // TODO: Not implemented yet
-    return grad_input;
+    // define extra variables
+    const int num_embeddings = grad_output.size(0);
+    const int batch_size = grad_output.size(1);
+    const int input_channels = grad_output.size(2);
+
+    AT_DISPATCH_FLOATING_TYPES( 
+    grad_output.scalar_type(), "abstract_contextlayer_backward_wrapper", ([&] {
+        abstract_contextlayer_backward_wrapper<scalar_t>(grad_output.data_ptr<scalar_t>(), grad_input.data_ptr<scalar_t>(), offsets.data_ptr<int>(), resolutions.data_ptr<int>(), 
+            batch_size, num_embeddings, input_channels, num_levels, hashmap_size);
+    }));
+    return grad_input; 
 }
