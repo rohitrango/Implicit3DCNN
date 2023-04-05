@@ -111,6 +111,7 @@ __global__ void abstract_conv3d_forward_kernel_v4(
             int k1 = (kernel_idx/(K2*K3)) - K1/2;
             int k2 = ((kernel_idx % (K2*K3))/K3) - K2/2;
             int k3 = (kernel_idx%K3) - K3/2;
+
             // get start weight index (only add (c_in, c_out))
             const scalar_t *weight_start = weights + level*kernel_volume*iosize + kernel_idx*iosize;
             // get neighboring index

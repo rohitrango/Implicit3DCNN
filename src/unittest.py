@@ -198,12 +198,12 @@ def forward_context_check():
 
 
 if __name__ == '__main__':
-    # print("Profiler check")
-    # profiler_check()
+    print("Profiler check")
+    profiler_check()
     # print("Forward pass check")
     # forward_pass_check()
     # print("\n\n\n")
     # print("Backward pass check")
     # backward_pass_check()
-    print("Forward context check.")
-    forward_context_check()
+    # print("Forward context check.")
+    # forward_context_check()

@@ -32,6 +32,32 @@ class _abstract_context(Function):
 # Get function
 abstractContextFunction = _abstract_context.apply
 
+class AbstractContextLayer(nn.Module):
+    ''' Couples a context function with an affine transformation (similar to a resnet layer but from the previous layer) '''
+    def __init__(self, channels_in, channels_out, resolutions, offsets, affine=None, num_levels=16, log_hashmap_size=19):
+        super().__init__()
+        self.channels_in = channels_in
+        self.channels_out = channels_out
+        self.resolutions = resolutions
+        self.offsets = offsets
+        if channels_in != channels_out:
+            if affine == False:
+                print("WARNING: affine is set to False, but channels_in != channels_out. Setting affine to True.")
+                affine = True
+        self.affine = None
+        if affine:
+            self.affine = nn.Linear(channels_in, channels_out)
+        # hash encoding params
+        self.num_levels = num_levels
+        self.hashmap_size = int(2**log_hashmap_size) 
+    
+    def forward(self, x):
+        ''' x: [N, B, C] '''
+        y = abstractContextFunction(x, self.offsets, self.resolutions, self.num_levels, self.hashmap_size)
+        if self.affine is not None:
+            y = self.affine(y)
+        return y
+
 class _abstract_conv3d(Function):
     @staticmethod
     @custom_fwd
@@ -114,11 +140,19 @@ if __name__ == '__main__':
     offsets = encoder.offsets
     print(embed.shape, resolutions.shape, offsets.shape)
 
+    context = AbstractContextLayer(2, 2, resolutions, offsets, False, 16, L).cuda()
+    y = context(embed)
+    a = time.time()
+    y = context(embed)
+    print(time.time() - a)
+    input()
+
     # get a ground truth
     encoder2 = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L, level_dim=4).cuda()
     gt = encoder2.embeddings[:, None].contiguous() * 1 + 1 # [1, N, 2]
     gt = gt.detach()
 
+    ### Deep network
     seq = [4, 4, 8, 8, 16, 16, 32, 32, 64, 64, 4]
     f = 2
     module = []
