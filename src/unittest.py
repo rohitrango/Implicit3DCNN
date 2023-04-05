@@ -2,10 +2,11 @@
 import torch
 from torch import nn
 import time
-from conv3d import AbstractConv3D
+from conv3d import AbstractConv3D, abstractContextFunction
 from torch.nn import functional as F
 import gridencoder as ge
 import numpy as np
+import matplotlib.pyplot as plt
 
 def profiler_check():
     ''' Check forward pass '''
@@ -141,12 +142,49 @@ def backward_pass_check():
                 conv_lvl.grad.abs().mean().item(), conv_bias.grad.abs().mean().item(), embed_lvl.grad.abs().mean().item()))
             print()
 
+def forward_context_check():
+    ''' Check forward pass for context layer '''
+    L = 19
+    batch = 1
+    # randomly initialize a grid encoder
+    encoder = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L).cuda()
+    embed = encoder.embeddings[:, None] * 1e3 # [N, 1, 2]
+    embed = embed.expand(-1, batch, -1).contiguous().detach()   # [N, B, 2]
+    resolutions = encoder.resolutions
+    offsets = encoder.offsets
+    # define layer with zero bias
+    a = time.time()
+    output = abstractContextFunction(embed, offsets, resolutions, 16, 2**L)
+    print(time.time() - a)
+
+    ## compare it with interpolation
+    for lvl in range(1, 16):
+        r = resolutions[lvl] 
+        if r**3 > encoder.max_params:
+            break
+        # get level from previous level
+        rprev = resolutions[lvl-1]
+        embed_lvl = embed[offsets[lvl-1]:offsets[lvl-1]+rprev**3, :].permute(1, 0, 2).contiguous()   # [B, rprev^3, C]
+        embed_lvl = embed_lvl.reshape(batch, rprev, rprev, rprev, 2).permute(0, 4, 3, 2, 1).contiguous()  # [1, 2, r, r, r]
+        # get output level (which is interpolated version of previous level)
+        output_lvl = output[offsets[lvl]:offsets[lvl]+r**3].permute(1, 0, 2).reshape(batch, r, r, r, 2).permute(0, 4, 3, 2, 1).contiguous()
+        fig, axs = plt.subplots(2, 1)
+        axs[0].imshow(embed_lvl[0, 0, 0, :, :].detach().cpu().numpy(), cmap='jet')
+        axs[1].imshow(output_lvl[0, 0, 0, :, :].detach().cpu().numpy(), cmap='jet')
+        fig.savefig("{lvl}.png".format(lvl=lvl))
+        fig.clf()
+        # meandiff = (output_lvl - output[offsets[lvl]:offsets[lvl]+r**3]).abs().mean().item()
+        # print(output_lvl.shape, output[offsets[lvl]:offsets[lvl]+r**3].shape, meandiff, output_lvl.abs().mean().item())
+
+
 
 if __name__ == '__main__':
-    print("Profiler check")
-    profiler_check()
-    print("Forward pass check")
-    forward_pass_check()
-    print("\n\n\n")
-    print("Backward pass check")
-    backward_pass_check()
+    # print("Profiler check")
+    # profiler_check()
+    # print("Forward pass check")
+    # forward_pass_check()
+    # print("\n\n\n")
+    # print("Backward pass check")
+    # backward_pass_check()
+    print("Forward context check.")
+    forward_context_check()

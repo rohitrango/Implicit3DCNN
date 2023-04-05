@@ -118,47 +118,65 @@ if __name__ == '__main__':
     gt = encoder2.embeddings[:, None].contiguous() * 1 + 1 # [1, N, 2]
     gt = gt.detach()
 
-    layer = AbstractConv3D(2, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
-    layer2 = AbstractConv3D(8, 4, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
-
-    a = time.time()
-    output = abstractContextFunction(gt, offsets, resolutions, 16, 2**L)
-    print(time.time() - a)
-    print("done.")
-    print(output)
-    # print(output.min(), output.max(), output.shape, embed.min(), embed.max(), embed.shape)
-    input()
-
-
-    # compute time
-    # embed = embed.expand(-1, 32, -1).contiguous()
-    a = time.time()
-    output = layer(embed)
-    print(time.time() - a)
-    print(output.min(), output.max(), output.shape)
-
-    optim = torch.optim.Adam(list(layer.parameters()) + list(layer2.parameters()), lr=5e-2)
-    pbar = tqdm(range(200))
-    for it in pbar:
+    seq = [4, 4, 8, 8, 16, 16, 32, 32, 64, 64, 4]
+    f = 2
+    module = []
+    for s in seq:
+        module.append(AbstractConv3D(f, s, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda())
+        module.append(nn.LeakyReLU())
+        f = s
+    module = nn.Sequential(*module[:-1])
+    print(module)
+    optim = torch.optim.Adam(module.parameters(), lr=1e-3)
+    for i in range(2000):
         optim.zero_grad()
-        out = layer(embed) 
-        output = layer2(F.leaky_relu(out))
-        loss = 0
-        # loss = F.binary_cross_entropy_with_logits(output, output.detach()*0 + 1)
-        for i in range(16):
-            sz = int(min(encoder.max_params, resolutions[i]**3))
-            # loss += ((output[offsets[i]:offsets[i]+sz] - 1)**2).mean()
-            ### cross-entropy loss shows very good performance (with Adam, lr = 5e-2)
-            loss += F.binary_cross_entropy_with_logits(output[offsets[i]:offsets[i]+sz], 0*output[offsets[i]:offsets[i]+sz].detach()+1)
-        loss = loss / 16.0
-        (loss).backward()
-        # loss = ((output - 1)**2).mean() 
-        # loss.backward()
+        out = module(embed)
+        # loss = F.binary_cross_entropy_with_logits(out, gt)
+        loss = F.mse_loss(out, gt)
+        loss.backward()
         optim.step()
-        pbar.set_description("iter: %d, loss: %.6f" % (it, loss.item()))
-    print(layer2.weight.abs().mean(), layer2.bias)
-    print(layer.weight.abs().mean(), layer.bias)
-    print(output)
+        print(loss.item())
+
+    # layer = AbstractConv3D(2, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
+    # layer2 = AbstractConv3D(8, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
+
+    # a = time.time()
+    # output = abstractContextFunction(gt, offsets, resolutions, 16, 2**L)
+    # print(time.time() - a)
+    # print("done.")
+    # #print(output)
+    # # print(output.min(), output.max(), output.shape, embed.min(), embed.max(), embed.shape)
+    # #input()
+
+    # # compute time
+    # # embed = embed.expand(-1, 32, -1).contiguous()
+    # a = time.time()
+    # output = layer(embed)
+    # print(time.time() - a)
+    # print(output.min(), output.max(), output.shape)
+
+    # optim = torch.optim.Adam(list(layer.parameters()) + list(layer2.parameters()), lr=5e-2)
+    # pbar = tqdm(range(200))
+    # for it in pbar:
+    #     optim.zero_grad()
+    #     out = layer(embed) 
+    #     output = layer2(F.leaky_relu(out))
+    #     loss = 0
+    #     # loss = F.binary_cross_entropy_with_logits(output, output.detach()*0 + 1)
+    #     for i in range(16):
+    #         sz = int(min(encoder.max_params, resolutions[i]**3))
+    #         # loss += ((output[offsets[i]:offsets[i]+sz] - 1)**2).mean()
+    #         ### cross-entropy loss shows very good performance (with Adam, lr = 5e-2)
+    #         loss += F.binary_cross_entropy_with_logits(output[offsets[i]:offsets[i]+sz], 0*output[offsets[i]:offsets[i]+sz].detach()+1)
+    #     loss = loss / 16.0
+    #     (loss).backward()
+    #     # loss = ((output - 1)**2).mean() 
+    #     # loss.backward()
+    #     optim.step()
+    #     pbar.set_description("iter: %d, loss: %.6f" % (it, loss.item()))
+    # print(layer2.weight.abs().mean(), layer2.bias)
+    # print(layer.weight.abs().mean(), layer.bias)
+    # print(output)
 
     # optim = torch.optim.SGD(layer.parameters(), lr=1e-0, momentum=0.9)
     # optim = torch.optim.Adam(list(layer.parameters()), lr=4e-2)

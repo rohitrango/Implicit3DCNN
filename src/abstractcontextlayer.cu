@@ -36,6 +36,11 @@ __device__ int compute_ravel_hash(const int *coord, const int resolution, const 
     return index % hashmap_size;
 }
 
+__device__ bool out_of_bounds(const int* coord, const int resolution) {
+    // check if the coordinate is out of bounds
+    return coord[0] < 0 || coord[0] >= resolution || coord[1] < 0 || coord[1] >= resolution || coord[2] < 0 || coord[2] >= resolution;
+}
+
 __device__ int get_level(const int* __restrict__  offsets, const int tableoffset, const int num_levels) {
     // given the tableoffset in the big hash table, get its level
     for(int i=1; i<num_levels; i++) {
@@ -68,7 +73,6 @@ __global__ void abstract_contextlayer_forward_kernel(
 {
     int num = batch_size*num_embeddings*input_channels;
     int output_channels = input_channels;
-    int offset1 = offsets[1];
 
     CUDA_KERNEL_LOOP(index, num) {
         // this is at least the first level
@@ -99,15 +103,31 @@ __global__ void abstract_contextlayer_forward_kernel(
             float coord_f[3];
             #pragma unroll
             for(int i=0; i<3; i++) 
-                coord_f[i] = ((float)coord[i]) / lvl_res * lvl_res_prev;
+                coord_f[i] = (((float)coord[i]) / (lvl_res - 1)) * (lvl_res_prev - 1);   // dividing makes it from [0, 1] and then resized to [0, lvl-1]
             // given the nearest float coordinates at the previous level 
             #pragma unroll
             for(int i=0; i<3; i++)
-                coord[i] = (int)(coord_f[i] + 0.49);
-            // this coordinate is in the previous level
+                coord[i] = (int)(coord_f[i] + 0.5 - 1e-6);
+            // Get index from x
             int xindex = compute_ravel_hash(coord, lvl_res_prev, hashmap_size) + offset_lvl_prev;
             res += input[xindex*batch_size*input_channels + b_idx*input_channels + c_idx];
-            // get to the next size
+            //// trilinearly interpolate (this is too slow)
+            // #pragma unroll
+            // for(int nbr=0; nbr<8; nbr++) {
+            //     scalar_t wt = 1;
+            //     #pragma unroll
+            //     for(int i=0; i<3; i++) {
+            //         coord[i] = ((int)floorf(coord_f[i])) + nbr%2;   // if remainder is 0, its floor, else ceil
+            //         wt *= (nbr%2)?(coord[i] + 1 - coord_f[i]):(coord_f[i] - coord[i] + 1);
+            //         nbr /= 2;
+            //     }
+            //     if(!out_of_bounds(coord, lvl_res_prev)) {
+            //         int xindex = compute_ravel_hash(coord, lvl_res_prev, hashmap_size) + offset_lvl_prev;
+            //         res += wt * input[xindex*batch_size*input_channels + b_idx*input_channels + c_idx];
+            //     }
+            // }
+            // this coordinate is in the previous level
+            // get to the next entry
             _iter_local_n += hashmap_size;
         }
         output[n_idx*batch_size*output_channels + b_idx*output_channels + c_idx] = res;
