@@ -37,8 +37,8 @@ _backend = load(name='_abstract_conv3d',
                 extra_cflags=c_flags,
                 extra_cuda_cflags=nvcc_flags,
                 sources=[os.path.join(_src_path, f) for f in [
-                    'bindings.cpp',
-                    'abstractconv3d.cu'
+                    'src/bindings.cpp',
+                    'src/abstractconv3d.cu'
                 ]],
                 verbose=False,
                 )
@@ -48,8 +48,8 @@ _backend_context = load(name='_abstract_context',
                 extra_cflags=c_flags,
                 extra_cuda_cflags=nvcc_flags,
                 sources=[os.path.join(_src_path, f) for f in [
-                    'bindings_contextlayer.cpp',
-                    'abstractcontextlayer.cu'
+                    'src/bindings_contextlayer.cpp',
+                    'src/abstractcontextlayer.cu'
                 ]],
                 verbose=False,
                 )

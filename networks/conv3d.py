@@ -7,56 +7,10 @@ from torch.cuda.amp import custom_bwd, custom_fwd
 from torch.nn import functional as F
 from torch.autograd import Function
 from backend import _backend, _backend_context
+from gridencoder.grid import grid_encode
 import time
 from tqdm import tqdm
-
-class _abstract_context(Function):
-    @staticmethod
-    @custom_fwd
-    def forward(ctx, input, offsets, resolutions, num_levels, hashmap_size):
-        if input.requires_grad:
-            ctx.save_for_backward(offsets, resolutions, torch.tensor(num_levels), torch.tensor(hashmap_size))
-        output = torch.zeros_like(input, dtype=input.dtype, device=input.device)
-        output = _backend_context.abstract_contextlayer_forward(input, output, offsets, resolutions, num_levels, hashmap_size)
-        return output
-    
-    @staticmethod
-    @custom_bwd
-    def backward(ctx, grad_outputs):
-        offsets, resolutions, num_levels, hashmap_size = ctx.saved_tensors
-        num_levels, hashmap_size = int(num_levels.item()), int(hashmap_size.item())
-        grad_input = torch.zeros_like(grad_outputs, dtype=grad_outputs.dtype, device=grad_outputs.device)
-        grad_input = _backend_context.abstract_contextlayer_backward(grad_outputs, grad_input, offsets, resolutions, num_levels, hashmap_size)
-        return grad_input, None, None, None, None
-
-# Get function
-abstractContextFunction = _abstract_context.apply
-
-class AbstractContextLayer(nn.Module):
-    ''' Couples a context function with an affine transformation (similar to a resnet layer but from the previous layer) '''
-    def __init__(self, channels_in, channels_out, resolutions, offsets, affine=None, num_levels=16, log_hashmap_size=19):
-        super().__init__()
-        self.channels_in = channels_in
-        self.channels_out = channels_out
-        self.resolutions = resolutions
-        self.offsets = offsets
-        if channels_in != channels_out:
-            if affine == False:
-                print("WARNING: affine is set to False, but channels_in != channels_out. Setting affine to True.")
-                affine = True
-        self.affine = None
-        if affine:
-            self.affine = nn.Linear(channels_in, channels_out)
-        # hash encoding params
-        self.num_levels = num_levels
-        self.hashmap_size = int(2**log_hashmap_size) 
-    
-    def forward(self, x):
-        ''' x: [N, B, C] '''
-        y = abstractContextFunction(x, self.offsets, self.resolutions, self.num_levels, self.hashmap_size)
-        if self.affine is not None:
-            y = self.affine(y)
-        return y
+import numpy as np
 
 class _abstract_conv3d(Function):
     @staticmethod
@@ -99,6 +53,56 @@ class _abstract_conv3d(Function):
 
 abstractConv3DFunction = _abstract_conv3d.apply
 
+class HashRouterLayer(nn.Module):
+    # combines the hash table routing with a mlp for querying per-pixel values
+    def __init__(self, resolutions, offsets, num_levels=16, log_hashmap_size=19, embed_channels=2, mlp_channels=[32, 32], out_channels=1, activ=nn.LeakyReLU()):
+        super().__init__()
+        self.resolutions = resolutions
+        self.offsets = offsets
+        self.num_levels = num_levels
+        self.log_hashmap_size = log_hashmap_size
+        self.embed_channels = embed_channels
+        # get mlp
+        mlp = []
+        embed_channels = embed_channels * num_levels
+        for c in mlp_channels:
+            mlp.append(nn.Linear(embed_channels, c))
+            embed_channels = c
+            mlp.append(activ)
+        mlp.append(nn.Linear(embed_channels, out_channels))
+        self.mlp = nn.Sequential(*mlp)
+        self.base_resolution = base_resolution = resolutions[0].item()
+        self.desired_resolution = desired_resolution = resolutions[-1].item()
+        self.per_level_scale = np.exp2(np.log2(desired_resolution / base_resolution) / (num_levels - 1))
+        # Done
+        pass
+    
+    def forward(self, inputcoords, embeddings, bound=1):
+        # input_coords: [*, batch_size, 3]
+        # embeddings: [num_embeddings, batch_size, embed_channels]
+        # outputs: [*, batch_size, output_channels]
+        batch_size = inputcoords.shape[-2]
+        prefix_shape = list(inputcoords.shape[:-2])
+        # if batch size is 1, just squeeze the batch size dimension and use that
+        if batch_size == 1:
+            input = (inputcoords + bound)/(2*bound)
+            input = input.view(-1, 3)
+            outputs = grid_encode(input, embeddings[:, 0], self.offsets, self.per_level_scale, self.base_resolution, inputcoords.requires_grad, 1, True, 0)
+            outputs = outputs.view(prefix_shape + [1, self.num_levels * self.embed_channels])
+            alloutputs = self.mlp(outputs)
+        else:
+            alloutputs = []
+            for b in range(batch_size):
+                input = (inputcoords[..., b, :] + bound)/(2*bound)
+                input = input.view(-1, 3)
+                # last three parameters are: gridtype, align_corners, mode
+                outputs = grid_encode(input, embeddings[:, b].contiguous(), self.offsets, self.per_level_scale, self.base_resolution, inputcoords.requires_grad, 1, True, 0)
+                outputs = outputs.view(prefix_shape + [1, self.num_levels * self.embed_channels])
+                alloutputs.append(outputs)
+            alloutputs = torch.cat(alloutputs, dim=-2)
+            alloutputs = self.mlp(alloutputs)
+        return alloutputs
+
 class AbstractConv3D(nn.Module):
     ''' Actual nn Module that implements the 3D convolution layer'''
     def __init__(self, channels_in, channels_out, resolutions, offsets, kernel_size, bias=True, num_levels=16,
@@ -140,37 +144,38 @@ if __name__ == '__main__':
     offsets = encoder.offsets
     print(embed.shape, resolutions.shape, offsets.shape)
 
-    context = AbstractContextLayer(2, 2, resolutions, offsets, False, 16, L).cuda()
-    y = context(embed)
+    router = HashRouterLayer(resolutions, offsets, 16, L, 2, [32, 32], out_channels=3).cuda()
+    inputs = torch.rand(10000, 1, 3).cuda()*2 - 1
+    print(router)
     a = time.time()
-    y = context(embed)
+    y = router(inputs, embed)
     print(time.time() - a)
-    input()
+    print(inputs.shape, embed.shape, y.shape)
 
     # get a ground truth
-    encoder2 = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L, level_dim=4).cuda()
-    gt = encoder2.embeddings[:, None].contiguous() * 1 + 1 # [1, N, 2]
-    gt = gt.detach()
+    # encoder2 = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L, level_dim=4).cuda()
+    # gt = encoder2.embeddings[:, None].contiguous() * 1 + 1 # [1, N, 2]
+    # gt = gt.detach()
 
     ### Deep network
-    seq = [4, 4, 8, 8, 16, 16, 32, 32, 64, 64, 4]
-    f = 2
-    module = []
-    for s in seq:
-        module.append(AbstractConv3D(f, s, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda())
-        module.append(nn.LeakyReLU())
-        f = s
-    module = nn.Sequential(*module[:-1])
-    print(module)
-    optim = torch.optim.Adam(module.parameters(), lr=1e-3)
-    for i in range(2000):
-        optim.zero_grad()
-        out = module(embed)
-        # loss = F.binary_cross_entropy_with_logits(out, gt)
-        loss = F.mse_loss(out, gt)
-        loss.backward()
-        optim.step()
-        print(loss.item())
+    # seq = [4, 4, 8, 8, 16, 16, 32, 32, 64, 64, 4]
+    # f = 2
+    # module = []
+    # for s in seq:
+    #     module.append(AbstractConv3D(f, s, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda())
+    #     module.append(nn.LeakyReLU())
+    #     f = s
+    # module = nn.Sequential(*module[:-1])
+    # print(module)
+    # optim = torch.optim.Adam(module.parameters(), lr=1e-3)
+    # for i in range(2000):
+    #     optim.zero_grad()
+    #     out = module(embed)
+    #     # loss = F.binary_cross_entropy_with_logits(out, gt)
+    #     loss = F.mse_loss(out, gt)
+    #     loss.backward()
+    #     optim.step()
+    #     print(loss.item())
 
     # layer = AbstractConv3D(2, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
     # layer2 = AbstractConv3D(8, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()

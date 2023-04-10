@@ -2,7 +2,8 @@
 import torch
 from torch import nn
 import time
-from conv3d import AbstractConv3D, abstractContextFunction
+from conv3d import AbstractConv3D
+from contextlayer import abstractContextFunction
 from torch.nn import functional as F
 import gridencoder as ge
 import numpy as np
