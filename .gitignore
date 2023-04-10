@@ -5,3 +5,4 @@ torch-ngp
 **/gridencoder
 **/*ncu-rep
 baselines/*
+Implicit3DCNN.egg-info/
