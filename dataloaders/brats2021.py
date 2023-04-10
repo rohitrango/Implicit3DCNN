@@ -71,10 +71,14 @@ class BRATS2021Dataset(Dataset):
             if seg is not None:
                 segpoints = seg[xyz[0], xyz[1], xyz[2]]
             xyz = torch.stack(xyz, dim=1).int()  # [num_points, 3]
+
         elif 'full' in self.sample:
             xyz = torch.meshgrid([torch.arange(0, dim,) for dim in [H, W, D]], indexing='ij')  # [H, W, D]
             xyz = torch.stack(xyz, dim=-1).view(-1, 3)  # [H*W*D, 3]
-            imgpoints = torch.cat([img[..., None] for img in images], dim=-1).reshape(-1, 4)  # [H*W*D, 4]
+            imgpoints = torch.cat([img[xyz[..., 0], xyz[..., 1], xyz[..., 2], None] for img in images], dim=-1).reshape(-1, 4)  # [H*W*D, 4]
+            ### Check if meshgrid and full sampling are the same
+            # imgpoint2 = torch.cat([img[..., None] for img in images], dim=-1).reshape(-1, 4)
+            # print('avg', torch.abs(imgpoint2 - imgpoints).mean())
             if seg is not None:
                 segpoints = seg.reshape(-1)  # [H*W*D]
         else:
@@ -92,7 +96,7 @@ class BRATS2021Dataset(Dataset):
             
 
 if __name__ == '__main__':
-    dataset = BRATS2021Dataset('/data/BRATS2021/training/', sample='randomseg')
+    dataset = BRATS2021Dataset('/data/BRATS2021/training/', sample='full')
     print(len(dataset))
     ds = dataset[0]
     for k, v in ds.items():
