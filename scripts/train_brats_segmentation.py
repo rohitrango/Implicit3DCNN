@@ -12,13 +12,16 @@ from tqdm import tqdm
 import numpy as np
 from torch.nn import functional as F
 from utils.losses import dice_loss_with_logits, dice_score_val
+import tensorboardX
+import os
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--exp_name', type=str, required=True, help='Name of experiment')
 parser.add_argument('--cfg_file', type=str, default='configs/brats_basic_seg.yaml', help='Path to config file')
 parser.add_argument('opts', default=None, nargs=argparse.REMAINDER)
 
 @torch.no_grad()
-def eval_validation_data(cfg, network, val_dataset, epoch=None):
+def eval_validation_data(cfg, network, val_dataset, epoch=None, writer=None):
     '''
     Check for validation performance here
     '''
@@ -51,6 +54,9 @@ def eval_validation_data(cfg, network, val_dataset, epoch=None):
     print("validation results for epoch=", epoch)
     for i in range(3):
         print("Dice mean={:04f}, std={:04f}".format(np.mean(dice_scores[i]), np.std(dice_scores[i])))
+        valepoch = -1 if epoch is None else epoch
+        writer.add_scalar(f'val/dice_mean_{i}', np.mean(dice_scores[i]), valepoch)
+        writer.add_scalar(f'val/dice_std_{i}', np.std(dice_scores[i]), valepoch)
     
 
 if __name__ == '__main__':
@@ -60,6 +66,12 @@ if __name__ == '__main__':
     cfg.merge_from_file(args.cfg_file)
     cfg.merge_from_list(args.opts)
     print(cfg)
+
+    if os.path.exists('experiments/' + args.exp_name):
+        print("Experiment {args.exp_name} already exists. Please delete it first.")
+        exit(1)
+    os.makedirs('experiments/' + args.exp_name)
+    writer = tensorboardX.SummaryWriter(log_dir='experiments/' + args.exp_name)
 
     # set up datasets
     train_dataset = BRATS2021EncoderSegDataset(cfg.DATASET.TRAIN_ENCODED_DIR, cfg.DATASET.TRAIN_SEG_DIR, train=True, val_fold=cfg.VAL.FOLD)
@@ -77,12 +89,11 @@ if __name__ == '__main__':
     lr_scheduler = get_scheduler(cfg, optim)
 
     # Sanity check first
-    eval_validation_data(cfg, network, val_dataset)
-
+    eval_validation_data(cfg, network, val_dataset, epoch=None, writer=writer)
     # train
     for epoch in range(cfg.TRAIN.EPOCHS):
         perm = tqdm(np.random.permutation(len(train_dataset)))
-        for idx in perm:
+        for i, idx in enumerate(perm):
             optim.zero_grad()
             # get data
             datum = train_dataset[idx]
@@ -99,5 +110,8 @@ if __name__ == '__main__':
             loss.backward()
             optim.step()
             perm.set_description(f'Epoch:{epoch} Loss:{loss.item():.4f} CE:{ce_loss.item():.4f} Dice:{dice_loss.item():.4f}')
+            writer.add_scalar('train/loss', loss.item(), epoch*len(train_dataset)+i)
+            writer.add_scalar('train/ce_loss', ce_loss.item(), epoch*len(train_dataset)+i)
+            writer.add_scalar('train/dice_loss', dice_loss.item(), epoch*len(train_dataset)+i)
         lr_scheduler.step()
-        eval_validation_data(cfg, network, val_dataset, epoch)
+        eval_validation_data(cfg, network, val_dataset, epoch, writer=writer)

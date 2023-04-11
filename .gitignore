@@ -6,3 +6,4 @@ torch-ngp
 **/*ncu-rep
 baselines/*
 Implicit3DCNN.egg-info/
+experiments

@@ -40,15 +40,23 @@ class AbstractResNetBasic(nn.Module):
     def __init__(self, offsets, resolutions):
         super().__init__()
         resblocks = []
+        # resblocks.append(Resblock(4, 8, resolutions, offsets))
+        # resblocks.append(Resblock(8, 16, resolutions, offsets))
+        # resblocks.append(Resblock(16, 16, resolutions, offsets))
+        # resblocks.append(Resblock(16, 16, resolutions, offsets))
+        # resblocks.append(Resblock(16, 8, resolutions, offsets))
+        # self.resblocks = nn.ModuleList(resblocks)
+        # # decoder
+        # self.decoder = HashRouterLayer(resolutions, offsets, num_levels=16, log_hashmap_size=19,
+        #                                   embed_channels=8, mlp_channels=[32, 32], out_channels=4)
         resblocks.append(Resblock(4, 8, resolutions, offsets))
-        resblocks.append(Resblock(8, 16, resolutions, offsets))
-        resblocks.append(Resblock(16, 16, resolutions, offsets))
-        resblocks.append(Resblock(16, 16, resolutions, offsets))
-        resblocks.append(Resblock(16, 8, resolutions, offsets))
+        resblocks.append(Resblock(8, 8, resolutions, offsets))
+        resblocks.append(Resblock(8, 8, resolutions, offsets))
+        resblocks.append(Resblock(8, 8, resolutions, offsets))
         self.resblocks = nn.ModuleList(resblocks)
-        # decoder
         self.decoder = HashRouterLayer(resolutions, offsets, num_levels=16, log_hashmap_size=19,
-                                          embed_channels=8, mlp_channels=[32, 32], out_channels=4)
+                                            embed_channels=8, mlp_channels=[], out_channels=4)
+
         self.resolutions = resolutions
         self.offsets = offsets
     
