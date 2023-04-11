@@ -6,7 +6,7 @@ from torch import nn
 from torch.cuda.amp import custom_bwd, custom_fwd
 from torch.nn import functional as F
 from torch.autograd import Function
-from backend import _backend, _backend_context
+from networks.backend import _backend, _backend_context
 from gridencoder.grid import grid_encode
 import time
 from tqdm import tqdm
@@ -105,7 +105,7 @@ class HashRouterLayer(nn.Module):
 
 class AbstractConv3D(nn.Module):
     ''' Actual nn Module that implements the 3D convolution layer'''
-    def __init__(self, channels_in, channels_out, resolutions, offsets, kernel_size, bias=True, num_levels=16,
+    def __init__(self, channels_in, channels_out, resolutions, offsets, kernel_size=3, bias=True, num_levels=16,
                  log_hashmap_size=19):
         super().__init__()
         self.channels_in = channels_in
@@ -118,12 +118,17 @@ class AbstractConv3D(nn.Module):
             kernel_size = (kernel_size, kernel_size, kernel_size)
         else:
             assert len(kernel_size) == 3, "kernel_size should be int or tuple/list of length 3"
+        self.kernel_size = kernel_size
         ## list of grid sizes/resolutions, and offsets, should be int32
         self.register_buffer('resolutions', resolutions.clone().detach().int())
         self.register_buffer('offsets', offsets.clone().detach().int())
         ### load weights now
         self.register_parameter('weight', nn.Parameter(0.01*torch.randn(num_levels, *kernel_size, channels_in, channels_out)))   # keep channels_in at the end to 
         self.register_parameter('bias', nn.Parameter(torch.zeros(num_levels, channels_out)) if bias else None)
+
+    def __str__(self) -> str:
+        return "AbstractConv3D, input={}, output={}, kernel_size={}\nweight_size={}, bias_size={}".format(self.channels_in, \
+                                                                self.channels_out, self.kernel_size, self.weight.shape, self.bias.shape)
 
     def forward(self, input):
         ''' forward pass 
@@ -144,7 +149,7 @@ if __name__ == '__main__':
     offsets = encoder.offsets
     print(embed.shape, resolutions.shape, offsets.shape)
 
-    router = HashRouterLayer(resolutions, offsets, 16, L, 2, [32, 32], out_channels=3).cuda()
+    router = HashRouterLayer(resolutions, offsets, 16, L, 2, [32, 32], out_channels=4).cuda()
     inputs = torch.rand(10000, 1, 3).cuda()*2 - 1
     print(router)
     a = time.time()

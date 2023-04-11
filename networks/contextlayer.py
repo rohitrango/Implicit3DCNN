@@ -6,7 +6,7 @@ from torch import nn
 from torch.cuda.amp import custom_bwd, custom_fwd
 from torch.nn import functional as F
 from torch.autograd import Function
-from backend import _backend_context
+from networks.backend import _backend_context
 from gridencoder.grid import grid_encode
 import time
 from tqdm import tqdm
@@ -72,7 +72,7 @@ if __name__ == '__main__':
     offsets = encoder.offsets
     print(embed.shape, resolutions.shape, offsets.shape)
 
-    context = AbstractContextLayer(2, 2, resolutions, offsets, False, 16, L).cuda()
+    context = AbstractContextLayer(2, 2, resolutions=resolutions, offsets=offsets, affine=False, num_levels=16, log_hashmap_size=L).cuda()
     y = context(embed)
     a = time.time()
     y = context(embed)
