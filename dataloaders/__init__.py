@@ -1,1 +1,1 @@
-from .brats2021 import BRATS2021Dataset
+from .brats2021 import BRATS2021Dataset, BRATS2021EncoderSegDataset

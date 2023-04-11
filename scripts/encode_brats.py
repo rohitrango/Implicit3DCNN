@@ -117,6 +117,7 @@ if __name__ == '__main__':
         xyzfloat = xyzfloat.float().cuda()
         image = datum['imgpoints'].cuda()
         total_points = image.shape[0]
+        subj = datum['subj']
         for i in range(args.num_epochs_stage2):
             encoder_optim.zero_grad()
             minibatch = np.random.randint(total_points, size=(args.num_points))
@@ -127,7 +128,7 @@ if __name__ == '__main__':
             # loss and backward
             loss = F.mse_loss(pred_minibatch, imageminibatch)
             loss.backward()
-            pbar.set_description("Index: {} iter: {}/{}, Loss: {:06f}".format(idx, i, args.num_epochs_stage2, loss.item()))
+            pbar.set_description("subj: {} iter: {}/{}, Loss: {:06f}".format(subj, i, args.num_epochs_stage2, loss.item()))
             encoder_optim.step()
         # finished training, save the encoder
-        torch.save(encoder.state_dict(), osp.join(args.output_dir, "encoder_{}.pth".format(idx)))
+        torch.save(encoder.state_dict(), osp.join(args.output_dir, "encoder_{}.pth".format(subj)))

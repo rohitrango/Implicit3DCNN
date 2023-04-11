@@ -15,5 +15,12 @@ train.LR_SCHEDULER = 'poly'
 val = _C.VAL = CN()  # validation config
 val.FOLD = 0        
 
+dataset = _C.DATASET = CN()  # dataset config
+dataset.TRAIN_ENCODED_DIR = '/data/Implicit3DCNNTasks/brats2021/'
+dataset.TRAIN_SEG_DIR = '/data/BRATS2021/training/'
+
+net = _C.NETWORK = CN()
+
+
 def get_cfg_defaults():
     return _C.clone()

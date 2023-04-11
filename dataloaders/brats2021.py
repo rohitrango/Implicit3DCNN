@@ -39,6 +39,7 @@ class BRATS2021Dataset(Dataset):
         else:
             augidx = None
         # load image
+        subj = self.dirs[index].split('/')[-1]
         images = [torch.from_numpy(nib.load(f).get_fdata()).float() for f in self.files[self.dirs[index]]]
         images = [uniform_normalize(img) for img in images]
         # images = [z_score_normalize(img) for img in images]
@@ -91,18 +92,99 @@ class BRATS2021Dataset(Dataset):
             'imgpoints': imgpoints,
             'segpoints': segpoints,
             'xyz': xyz,
+            'subj': subj,
             'dims': torch.tensor([H, W, D]).int(),
         }
             
 
-if __name__ == '__main__':
-    dataset = BRATS2021Dataset('/data/BRATS2021/training/', sample='full')
-    print(len(dataset))
-    ds = dataset[0]
-    for k, v in ds.items():
-        if type(v) == torch.Tensor:
-            print(k, v.shape, v.dtype, v.device, v.min(), v.max())
+class BRATS2021EncoderSegDataset(Dataset):
+    ''' Dataset for loading the encoded features, coordinates and segmentation '''
+    def __init__(self, encoded_root_dir, seg_root_dir, train=True, num_folds=5, val_fold=0):
+        super().__init__()
+        self.encoded_root_dir = encoded_root_dir
+        self.seg_root_dir = seg_root_dir
+        # get all the encoders and segmentations  
+        # (sorting should be consistent because we use the same naming convention for encoders and original segmentations)
+        encoded_files = sorted(glob(osp.join(encoded_root_dir, 'encoder*.pth')))
+        segm_files = sorted(glob(osp.join(seg_root_dir, '*/*seg*nii.gz')))
+        assert len(encoded_files) == len(segm_files)
+        # zip both files and split into folds
+        both_files = list(zip(encoded_files, segm_files))
+        N = len(both_files)
+        # discard the val fold if train, else keep only the val fold
+        both_files_split = np.array_split(both_files, num_folds)
+        if train:
+            del both_files_split[val_fold]
+            both_files_split = [item for sublist in both_files_split for item in sublist]
         else:
-            print(k, v)
-    norm = ds['xyz']/(ds['dims'][None]-1)*2 - 1
-    print(norm, norm.dtype)
+            both_files_split = [item for item in both_files_split[val_fold]]
+        # save it to files, and initialize weights
+        self.both_files = both_files_split
+        self.ce_weights = dict()
+    
+    def __len__(self):
+        return len(self.both_files) * 8   # divide it into 8 chunks of subsampled points
+
+    def __getitem__(self, index):
+        # get chunk and index size
+        chunk = index % 8
+        index = index // 8
+        startx, starty, startz = (chunk // 4), ((chunk // 2) % 2), (chunk % 2)
+        # get encoder and segmentation
+        encoderfile, segmfile = self.both_files[index]
+        data = dict(torch.load(encoderfile, map_location='cpu'))
+        data['embeddings'] = data['embeddings'][:, None]   # [N, 1, C]
+        # load segmentation
+        seg = torch.from_numpy(nib.load(segmfile).get_fdata()).int() 
+        seg[seg == 4] = 3
+        H, W, D = seg.shape
+        # get count stats
+        if self.ce_weights.get(index) is None:
+            count = torch.bincount(seg.reshape(-1), minlength=4)
+            weights = 1.0/(1 + count)
+            weights = weights / weights.sum() * 4
+            self.ce_weights[index] = weights
+        # retrieve weights
+        weights = self.ce_weights[index]
+        xyz = torch.meshgrid([torch.arange(s, dim, 2) for s, dim in [(startx, H), (starty, W), (startz, D)]], indexing='ij')  # [H, W, D]
+        xyz = torch.stack(xyz, dim=-1)              # [H2, W2, D2, 3]
+        seg = seg[startx::2, starty::2, startz::2]  # [H2, W2, D2]
+        # add to data
+        data['xyz'] = xyz.reshape(-1, 3).int()
+        data['dims'] = torch.tensor([H, W, D]).int()
+        data['segm'] = seg.reshape(-1)
+        data['weights'] = weights
+        return data
+
+
+if __name__ == '__main__':
+    ### Check for encoded dataset
+    dataset = BRATS2021EncoderSegDataset('/data/Implicit3DCNNTasks/brats2021', '/data/BRATS2021/training/')
+    print(len(dataset))
+    for idx in np.random.randint(len(dataset)//8, size=(20,)):
+        datum = dataset[idx]
+        enc, seg = dataset.both_files[idx]
+        print(enc, seg)
+        for k, v in datum.items():
+            if(k == 'weights'):
+                print(k, v)
+                continue
+            if type(v) == torch.Tensor:
+                print(k, v.shape, v.dtype, v.device, v.min(), v.max())
+            else:
+                print(k, v)
+        print()
+        # print(idx, enc, seg)
+        # print(idx, dataset[idx])
+
+    ### Check for BRATS 2021 dataset
+    # dataset = BRATS2021Dataset('/data/BRATS2021/training/', sample='full')
+    # print(len(dataset))
+    # ds = dataset[0]
+    # for k, v in ds.items():
+    #     if type(v) == torch.Tensor:
+    #         print(k, v.shape, v.dtype, v.device, v.min(), v.max())
+    #     else:
+    #         print(k, v)
+    # norm = ds['xyz']/(ds['dims'][None]-1)*2 - 1
+    # print(norm, norm.dtype)
