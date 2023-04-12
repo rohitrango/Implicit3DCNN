@@ -11,9 +11,11 @@ from gridencoder import GridEncoder
 from tqdm import tqdm
 import numpy as np
 from torch.nn import functional as F
-from utils.losses import dice_loss_with_logits, dice_score_val
+from utils.losses import dice_loss_with_logits, dice_score_val, dice_loss_with_logits_batched
+from utils.util import crop_collate_fn
 import tensorboardX
 import os
+from torch.utils.data import DataLoader
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--exp_name', type=str, required=True, help='Name of experiment')
@@ -25,38 +27,54 @@ def eval_validation_data(cfg, network, val_dataset, epoch=None, writer=None):
     '''
     Check for validation performance here
     '''
-    dice_scores = [[], [], []]
-    gt_segms = []
-    pred_segms = []
-    for idx in tqdm(range(len(val_dataset))):
-        if idx == 80:
-            break
-        datum = val_dataset[idx]
-        embed = datum['embeddings'].cuda()
-        coords = datum['xyz'].cuda() / (datum['dims'][None].cuda() - 1) * 2 - 1
-        coords = coords[:, None]
-        gt_segm = datum['segm'].cuda()
-        logits = network(embed, coords)[:, 0]
-        pred_segms.append(logits)
-        gt_segms.append(gt_segm)
-        # compute the dice
-        if idx % 8 == 7:
-            gt_segms = torch.cat(gt_segms, dim=0)  
-            pred_segms = torch.cat(pred_segms, dim=0)
-            pred_segms = torch.argmax(pred_segms, dim=-1) # [N]
-            dices = dice_score_val(pred_segms, gt_segms, num_classes=4, ignore_class=0)
-            for i, d in enumerate(dices):
-                dice_scores[i].append(d.item())
-            # reset
-            pred_segms = []
-            gt_segms = []
+    names = ['whole_tumor', 'tumor_core', 'enhancing_tumor']
+    try:
+        dice_scores = [[], [], []]
+        gt_segms = []
+        pred_segms = []
+        for idx in tqdm(range(len(val_dataset))):
+            if idx == 400:
+                break
+            datum = val_dataset[idx]
+            embed = datum['embeddings'].cuda()
+            coords = datum['xyz'].cuda() / (datum['dims'][None].cuda() - 1) * 2 - 1
+            coords = coords[:, None]
+            gt_segm = datum['segm'].cuda()
+            logits = network(embed, coords)[:, 0]
+            pred_segms.append(logits)
+            gt_segms.append(gt_segm)
+            # compute the dice
+            if idx % 8 == 7:
+                gt_segms = torch.cat(gt_segms, dim=0)  
+                pred_segms = torch.cat(pred_segms, dim=0)
+                pred_segms = torch.argmax(pred_segms, dim=-1) # [N]
+                # get dice scores (for whole tumor)
+                pred_wt = (pred_segms > 0)
+                gt_wt = (gt_segms > 0)
+                dice_scores[0].append(dice_score_val(pred_wt, gt_wt, num_classes=2, ignore_class=0)[0].item())
+                # get dice scores (for tumor core)
+                pred_wt = (pred_segms == 1)+(pred_segms == 3)
+                gt_wt = (gt_segms == 1)+(gt_segms == 3)
+                dice_scores[1].append(dice_score_val(pred_wt, gt_wt, num_classes=2, ignore_class=0)[0].item())
+                # get dice scores (for enhancing tumor)
+                pred_wt = (pred_segms == 3)
+                gt_wt = (gt_segms == 3)
+                dice_scores[2].append(dice_score_val(pred_wt, gt_wt, num_classes=2, ignore_class=0)[0].item())
+                # dices = dice_score_val(pred_segms, gt_segms, num_classes=4, ignore_class=0)
+                # for i, d in enumerate(dices):
+                #     dice_scores[i].append(d.item())
+                # reset
+                pred_segms = []
+                gt_segms = []
 
-    print("validation results for epoch=", epoch)
-    for i in range(3):
-        print("Dice mean={:04f}, std={:04f}".format(np.mean(dice_scores[i]), np.std(dice_scores[i])))
-        valepoch = -1 if epoch is None else epoch
-        writer.add_scalar(f'val/dice_mean_{i}', np.mean(dice_scores[i]), valepoch)
-        writer.add_scalar(f'val/dice_std_{i}', np.std(dice_scores[i]), valepoch)
+        print("validation results for epoch=", epoch)
+        for i, name in enumerate(names):
+            print("Dice {} mean={:04f}, std={:04f}".format(name, np.mean(dice_scores[i]), np.std(dice_scores[i])))
+            valepoch = -1 if epoch is None else epoch
+            writer.add_scalar(f'val/dice_mean_{name}', np.mean(dice_scores[i]), valepoch)
+
+    except KeyboardInterrupt:
+        print("Skipping validation")
     
 
 if __name__ == '__main__':
@@ -77,6 +95,9 @@ if __name__ == '__main__':
     train_dataset = BRATS2021EncoderSegDataset(cfg.DATASET.TRAIN_ENCODED_DIR, cfg.DATASET.TRAIN_SEG_DIR, train=True, val_fold=cfg.VAL.FOLD)
     val_dataset   = BRATS2021EncoderSegDataset(cfg.DATASET.TRAIN_ENCODED_DIR, cfg.DATASET.TRAIN_SEG_DIR, train=False, val_fold=cfg.VAL.FOLD)
 
+    train_dataloader = DataLoader(train_dataset, batch_size=cfg.TRAIN.BATCH_SIZE, shuffle=True, num_workers=cfg.TRAIN.NUM_WORKERS, 
+                                  pin_memory=True)
+
     # compute offsets and resolutions
     dummy = GridEncoder(level_dim=4, desired_resolution=196, gridtype='tiled', align_corners=True, log2_hashmap_size=19)
     resolutions = dummy.resolutions.cuda()
@@ -88,24 +109,28 @@ if __name__ == '__main__':
     optim = get_optimizer(cfg, network)
     lr_scheduler = get_scheduler(cfg, optim)
 
-    # Sanity check first
     eval_validation_data(cfg, network, val_dataset, epoch=None, writer=writer)
     # train
     for epoch in range(cfg.TRAIN.EPOCHS):
-        perm = tqdm(np.random.permutation(len(train_dataset)))
-        for i, idx in enumerate(perm):
+        # perm = tqdm(np.random.permutation(len(train_dataset)))
+        perm = tqdm(train_dataloader)
+        for i, datum in enumerate(perm):
             optim.zero_grad()
             # get data
-            datum = train_dataset[idx]
-            embed = datum['embeddings'].cuda()
-            coords = datum['xyz'].cuda() / (datum['dims'][None].cuda() - 1) * 2 - 1
-            coords = coords[:, None]
-            gt_segm = datum['segm'].cuda()
-            weights = datum['weights'].cuda()
+            # datum = train_dataset[idx]
+            embed = datum['embeddings'].cuda() # [B, N, 1, C]
+            embed = embed.squeeze(2).permute(1, 0, 2).contiguous()  # [N, B, C]
+            # coords = [B, N, 3], dims = [B, 3]
+            coords = datum['xyz'].cuda() / (datum['dims'][:, None].cuda() - 1) * 2 - 1
+            coords = coords.permute(1, 0, 2).contiguous()  # [N, B, 3]
+            # coords = coords[:, None]
+            gt_segm = datum['segm'].cuda()   # [B, N]
+            # weights = datum['weights'].cuda().mean(0)  # [B, C] -> [C]
             # forward
-            logits = network(embed, coords)[:, 0]
-            ce_loss = F.cross_entropy(logits, gt_segm.long(), weight=weights)
-            dice_loss = dice_loss_with_logits(logits, gt_segm)
+            logits = network(embed, coords)  # [N, B, out]
+            logits = logits.permute(1, 0, 2) # [B, N, out]
+            ce_loss = F.cross_entropy(logits.permute(0, 2, 1), gt_segm.long()) 
+            dice_loss = dice_loss_with_logits_batched(logits, gt_segm)
             loss = cfg.SEG.WEIGHT_DICE * dice_loss + cfg.SEG.WEIGHT_CE * ce_loss
             loss.backward()
             optim.step()

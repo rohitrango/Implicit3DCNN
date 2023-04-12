@@ -2,6 +2,27 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+def dice_loss_with_logits_batched(logits, segm, ignore_idx=0):
+    '''
+    :logits: [B, N, D]
+    :segm: [B, N]
+    '''
+    B1, N1, D = logits.shape
+    B2, N2 = segm.shape
+    assert B1 == B2 and N1 == N2
+    prob = F.softmax(logits, dim=-1)
+    loss, count = 0, 0
+    for d in range(D):
+        if d == ignore_idx:
+            continue
+        gt_d = (segm == d).float()
+        num = (2 * prob[:, :, d] * gt_d).mean(1) + 1e-5
+        den = (prob[:, :, d]**2 + gt_d).mean(1) + 1e-5
+        loss = loss + (1 - num/den).mean()
+        count += 1
+    return loss/count
+
+
 def dice_loss_with_logits(logits, segm, ignore_idx=0):
     # compute dice score for each logit
     N, D = logits.shape
@@ -11,8 +32,8 @@ def dice_loss_with_logits(logits, segm, ignore_idx=0):
         if d == ignore_idx:
             continue
         gt_d = (segm == d).float()
-        num = (2 * prob[:, d] * gt_d).mean() + 1e-8
-        den = (prob[:, d] + gt_d).mean() + 1e-5
+        num = (2 * prob[:, d] * gt_d).mean() + 1e-5
+        den = (prob[:, d]**2 + gt_d).mean() + 1e-5
         loss = loss + (1 - num/den)
         count += 1
     # average it out

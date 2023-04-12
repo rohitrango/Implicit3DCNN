@@ -11,6 +11,8 @@ train = _C.TRAIN = CN()  # training config
 train.EPOCHS = 300
 train.BASE_LR = 0.001
 train.LR_SCHEDULER = 'poly'
+train.BATCH_SIZE = 4
+train.NUM_WORKERS = 4
 
 val = _C.VAL = CN()  # validation config
 val.FOLD = 0        

@@ -101,6 +101,7 @@ class BRATS2021EncoderSegDataset(Dataset):
     ''' Dataset for loading the encoded features, coordinates and segmentation '''
     def __init__(self, encoded_root_dir, seg_root_dir, train=True, num_folds=5, val_fold=0):
         super().__init__()
+        self.train = train
         self.encoded_root_dir = encoded_root_dir
         self.seg_root_dir = seg_root_dir
         # get all the encoders and segmentations  
@@ -134,6 +135,7 @@ class BRATS2021EncoderSegDataset(Dataset):
         encoderfile, segmfile = self.both_files[index]
         data = dict(torch.load(encoderfile, map_location='cpu'))
         data['embeddings'] = data['embeddings'][:, None]   # [N, 1, C]
+        data['embeddings'] /= 0.05
         # load segmentation
         seg = torch.from_numpy(nib.load(segmfile).get_fdata()).int() 
         seg[seg == 4] = 3
@@ -146,9 +148,14 @@ class BRATS2021EncoderSegDataset(Dataset):
             self.ce_weights[index] = weights
         # retrieve weights
         weights = self.ce_weights[index]
-        xyz = torch.meshgrid([torch.arange(s, dim, 2) for s, dim in [(startx, H), (starty, W), (startz, D)]], indexing='ij')  # [H, W, D]
+        # do this to collate more easily
+        if self.train:
+            H2, W2, D2 = [int(t - t%2) for t in [H, W, D]]
+        else:
+            H2, W2, D2 = H, W, D
+        xyz = torch.meshgrid([torch.arange(s, dim, 2) for s, dim in [(startx, H2), (starty, W2), (startz, D2)]], indexing='ij')  # [H, W, D]
         xyz = torch.stack(xyz, dim=-1)              # [H2, W2, D2, 3]
-        seg = seg[startx::2, starty::2, startz::2]  # [H2, W2, D2]
+        seg = seg[startx:H2:2, starty:W2:2, startz:D2:2]  # [H2, W2, D2]
         # add to data
         data['xyz'] = xyz.reshape(-1, 3).int()
         data['dims'] = torch.tensor([H, W, D]).int()

@@ -6,7 +6,7 @@ from networks.conv3d import AbstractConv3D, HashRouterLayer
 class Resblock(nn.Module):
     def __init__(self, in_channels, out_channels, resolutions, offsets, layers=2, context=True, affine_context=True, 
                  kernel_size=3,
-                 num_levels=16, log_hashmap_size=19, activation=nn.LeakyReLU()):
+                 num_levels=16, log_hashmap_size=19, activation=nn.LeakyReLU(negative_slope=0.1)):
         super().__init__()
         self.context = None
         self.activation = activation
@@ -53,6 +53,7 @@ class AbstractResNetBasic(nn.Module):
         resblocks.append(Resblock(8, 8, resolutions, offsets))
         resblocks.append(Resblock(8, 8, resolutions, offsets))
         resblocks.append(Resblock(8, 8, resolutions, offsets))
+        resblocks.append(nn.LeakyReLU(0.1))
         self.resblocks = nn.ModuleList(resblocks)
         self.decoder = HashRouterLayer(resolutions, offsets, num_levels=16, log_hashmap_size=19,
                                             embed_channels=8, mlp_channels=[], out_channels=4)

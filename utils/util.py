@@ -23,3 +23,15 @@ def get_scheduler(cfg, optim):
     # TODO: Change this
     sch = torch.optim.lr_scheduler.PolynomialLR(optim, total_iters=cfg.TRAIN.EPOCHS, power=0.9)
     return sch
+
+def crop_collate_fn(data):
+    # data is a list of dicts, crop the coordinates and segmentations
+    sizes = [d['xyz'].shape[0] for d in data]
+    minsize = min(sizes)
+    for d in data:
+        d['xyz'] = d['xyz'][:minsize]
+        d['segm'] = d['segm'][:minsize]
+    ret = dict()
+    for k in data[0].keys():
+        ret[k] = torch.stack([d[k] for d in data])
+    return ret
