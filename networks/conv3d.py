@@ -70,6 +70,11 @@ class HashRouterLayer(nn.Module):
             embed_channels = c
             mlp.append(activ)
         mlp.append(nn.Linear(embed_channels, out_channels))
+        for m in mlp:
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity='leaky_relu')
+                nn.init.zeros_(m.bias)
+
         self.mlp = nn.Sequential(*mlp)
         self.base_resolution = base_resolution = resolutions[0].item()
         self.desired_resolution = desired_resolution = resolutions[-1].item()
@@ -123,7 +128,8 @@ class AbstractConv3D(nn.Module):
         self.register_buffer('resolutions', resolutions.clone().detach().int())
         self.register_buffer('offsets', offsets.clone().detach().int())
         ### load weights now
-        self.register_parameter('weight', nn.Parameter(0.01*torch.randn(num_levels, *kernel_size, channels_in, channels_out)))   # keep channels_in at the end to 
+        fan_in_w = np.sqrt(2 / (np.prod(kernel_size) * channels_in))
+        self.register_parameter('weight', nn.Parameter(fan_in_w * torch.randn(num_levels, *kernel_size, channels_in, channels_out)))   # keep channels_in at the end to 
         self.register_parameter('bias', nn.Parameter(torch.zeros(num_levels, channels_out)) if bias else None)
 
     def __str__(self) -> str:
