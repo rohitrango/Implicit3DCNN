@@ -124,12 +124,15 @@ class BRATS2021EncoderSegDataset(Dataset):
         self.ce_weights = dict()
     
     def __len__(self):
-        return len(self.both_files) * 8   # divide it into 8 chunks of subsampled points
+        return len(self.both_files) * (1 if self.train else 8)   # divide it into 8 chunks of subsampled points for test, for training, select a random chunk
 
     def __getitem__(self, index):
         # get chunk and index size
-        chunk = index % 8
-        index = index // 8
+        if self.train:
+            chunk = np.random.randint(8)
+        else:
+            chunk = index % 8
+            index = index // 8
         startx, starty, startz = (chunk // 4), ((chunk // 2) % 2), (chunk % 2)
         # get encoder and segmentation
         encoderfile, segmfile = self.both_files[index]

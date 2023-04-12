@@ -11,8 +11,8 @@ from gridencoder import GridEncoder
 from tqdm import tqdm
 import numpy as np
 from torch.nn import functional as F
-from utils.losses import dice_loss_with_logits, dice_score_val, dice_loss_with_logits_batched
-from utils.util import crop_collate_fn
+from utils.losses import dice_loss_with_logits, dice_score_val, dice_loss_with_logits_batched, dice_score_binary
+from utils.util import crop_collate_fn, format_raw_gt_to_brats
 import tensorboardX
 import os
 from torch.utils.data import DataLoader
@@ -47,22 +47,26 @@ def eval_validation_data(cfg, network, val_dataset, epoch=None, writer=None):
             if idx % 8 == 7:
                 gt_segms = torch.cat(gt_segms, dim=0)  
                 pred_segms = torch.cat(pred_segms, dim=0)
-                pred_segms = torch.argmax(pred_segms, dim=-1) # [N]
                 # get dice scores (for whole tumor)
-                pred_wt = (pred_segms > 0)
-                gt_wt = (gt_segms > 0)
-                dice_scores[0].append(dice_score_val(pred_wt, gt_wt, num_classes=2, ignore_class=0)[0].item())
-                # get dice scores (for tumor core)
-                pred_wt = (pred_segms == 1)+(pred_segms == 3)
-                gt_wt = (gt_segms == 1)+(gt_segms == 3)
-                dice_scores[1].append(dice_score_val(pred_wt, gt_wt, num_classes=2, ignore_class=0)[0].item())
-                # get dice scores (for enhancing tumor)
-                pred_wt = (pred_segms == 3)
-                gt_wt = (gt_segms == 3)
-                dice_scores[2].append(dice_score_val(pred_wt, gt_wt, num_classes=2, ignore_class=0)[0].item())
-                # dices = dice_score_val(pred_segms, gt_segms, num_classes=4, ignore_class=0)
-                # for i, d in enumerate(dices):
-                #     dice_scores[i].append(d.item())
+                if cfg.TRAIN.BRATS_SEGM_MODE == 'raw':
+                    pred_segms = torch.argmax(pred_segms, dim=-1) # [N]
+                    pred_wt = (pred_segms > 0)
+                    gt_wt = (gt_segms > 0)
+                    dice_scores[0].append(dice_score_val(pred_wt, gt_wt, num_classes=2, ignore_class=0)[0].item())
+                    # get dice scores (for tumor core)
+                    pred_wt = (pred_segms == 1)+(pred_segms == 3)
+                    gt_wt = (gt_segms == 1)+(gt_segms == 3)
+                    dice_scores[1].append(dice_score_val(pred_wt, gt_wt, num_classes=2, ignore_class=0)[0].item())
+                    # get dice scores (for enhancing tumor)
+                    pred_wt = (pred_segms == 3)
+                    gt_wt = (gt_segms == 3)
+                    dice_scores[2].append(dice_score_val(pred_wt, gt_wt, num_classes=2, ignore_class=0)[0].item())
+                else:
+                    pred_segms = (torch.sigmoid(pred_segms)>0.5).float()
+                    gts_brats = format_raw_gt_to_brats(gt_segms)
+                    dice_scores[2].append(dice_score_binary(pred_segms[..., 1], gts_brats[0]).item())  # ET
+                    dice_scores[1].append(dice_score_binary(pred_segms[..., 2], gts_brats[1]).item())  # TC
+                    dice_scores[0].append(dice_score_binary(pred_segms[..., 3], gts_brats[2]).item())  # WT
                 # reset
                 pred_segms = []
                 gt_segms = []
@@ -86,7 +90,7 @@ if __name__ == '__main__':
     print(cfg)
 
     if os.path.exists('experiments/' + args.exp_name):
-        print("Experiment {args.exp_name} already exists. Please delete it first.")
+        print(f"Experiment {args.exp_name} already exists. Please delete it first.")
         exit(1)
     os.makedirs('experiments/' + args.exp_name)
     writer = tensorboardX.SummaryWriter(log_dir='experiments/' + args.exp_name)
@@ -129,8 +133,19 @@ if __name__ == '__main__':
             # forward
             logits = network(embed, coords)  # [N, B, out]
             logits = logits.permute(1, 0, 2) # [B, N, out]
-            ce_loss = F.cross_entropy(logits.permute(0, 2, 1), gt_segm.long()) 
-            dice_loss = dice_loss_with_logits_batched(logits, gt_segm)
+            # check for what mode are we training in
+            if cfg.TRAIN.BRATS_SEGM_MODE == 'raw':
+                ce_loss = F.cross_entropy(logits.permute(0, 2, 1), gt_segm.long()) 
+                dice_loss = dice_loss_with_logits_batched(logits, gt_segm, cfg.TRAIN.LOGIT_TRANSFORM, ignore_idx=0)
+            else:
+                gt_segm_bratsformat = format_raw_gt_to_brats(gt_segm)
+                ce_losses = [F.binary_cross_entropy_with_logits(logits[..., i+1], gt_segm_bratsformat[i]) for i in range(3)]
+                ce_loss = 0
+                for ce in ce_losses:
+                    ce_loss += ce
+                ce_loss /= 3
+                dice_loss = dice_loss_with_logits_batched(logits, gt_segm_bratsformat, 'sigmoid', ignore_idx=0)
+
             loss = cfg.SEG.WEIGHT_DICE * dice_loss + cfg.SEG.WEIGHT_CE * ce_loss
             loss.backward()
             optim.step()

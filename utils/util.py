@@ -35,3 +35,11 @@ def crop_collate_fn(data):
     for k in data[0].keys():
         ret[k] = torch.stack([d[k] for d in data])
     return ret
+
+def format_raw_gt_to_brats(segm):
+    # convert the raw segmentation to brats format
+    # enhancing tumor, tumor core, whole tumor
+    et = (segm == 3).float()
+    tc = et + (segm == 1)
+    wt = tc + (segm == 2)
+    return et, tc, wt

@@ -2,20 +2,32 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-def dice_loss_with_logits_batched(logits, segm, ignore_idx=0):
+def dice_loss_with_logits_batched(logits, segm, transform='softmax', ignore_idx=0):
     '''
     :logits: [B, N, D]
     :segm: [B, N]
     '''
     B1, N1, D = logits.shape
-    B2, N2 = segm.shape
-    assert B1 == B2 and N1 == N2
-    prob = F.softmax(logits, dim=-1)
+    if isinstance(segm, torch.Tensor):
+        B2, N2 = segm.shape
+        assert B1 == B2 and N1 == N2
+
+    if transform == 'softmax':
+        prob = F.softmax(logits, dim=-1)
+    else:
+        prob = F.sigmoid(logits)
+
     loss, count = 0, 0
     for d in range(D):
         if d == ignore_idx:
             continue
-        gt_d = (segm == d).float()
+        if isinstance(segm, torch.Tensor):
+            gt_d = (segm == d).float()
+        elif isinstance(segm, (list, tuple)):
+            gt_d = segm[count]
+        else:
+            raise ValueError('segm must be a tensor or a list/tuple of tensors')
+
         num = (2 * prob[:, :, d] * gt_d).mean(1) + 1e-5
         den = (prob[:, :, d]**2 + gt_d).mean(1) + 1e-5
         loss = loss + (1 - num/den).mean()
@@ -48,3 +60,8 @@ def dice_score_val(pred, gt, num_classes=4, ignore_class=0):
         den = (pred == i).float() + (gt == i).float() + 1e-5
         ret.append(num.mean() / den.mean())
     return ret
+
+def dice_score_binary(pred, gt):
+    num = (2 * pred * gt).mean()
+    den = (pred + gt + 1e-5).mean()
+    return num/den
