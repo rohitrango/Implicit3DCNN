@@ -155,9 +155,10 @@ if __name__ == '__main__':
     offsets = encoder.offsets
     print(embed.shape, resolutions.shape, offsets.shape)
 
-    router = HashRouterLayer(resolutions, offsets, 16, L, 2, [32, 32], out_channels=4).cuda()
+    router = HashRouterLayer(resolutions, offsets, 16, L, 2, [], out_channels=4).cuda()
     inputs = torch.rand(10000, 1, 3).cuda()*2 - 1
     print(router)
+    y = router(inputs, embed)
     a = time.time()
     y = router(inputs, embed)
     print(time.time() - a)
@@ -188,23 +189,34 @@ if __name__ == '__main__':
     #     optim.step()
     #     print(loss.item())
 
-    # layer = AbstractConv3D(2, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
+    layer = AbstractConv3D(2, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
     # layer2 = AbstractConv3D(8, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
 
-    # a = time.time()
-    # output = abstractContextFunction(gt, offsets, resolutions, 16, 2**L)
-    # print(time.time() - a)
-    # print("done.")
+    from networks.contextlayer import abstractContextFunction
+    a = time.time()
+    embed.requires_grad = True
+    output = abstractContextFunction(embed, offsets, resolutions, 16, 2**L)
+    print(f"Time for context: {time.time() - a}")
+    a = time.time()
+    (output**2).mean().backward()
+    print(f"Time for context backward: {time.time() - a}")
+    print("done.")
     # #print(output)
     # # print(output.min(), output.max(), output.shape, embed.min(), embed.max(), embed.shape)
     # #input()
 
     # # compute time
-    # # embed = embed.expand(-1, 32, -1).contiguous()
-    # a = time.time()
-    # output = layer(embed)
-    # print(time.time() - a)
+    # embed = embed.expand(-1, 32, -1).contiguous()
+    a = time.time()
+    embed.requires_grad = True
+    output = layer(embed)
+    print(f"Time for conv3d: {time.time() - a}")
+    print(output.shape)
     # print(output.min(), output.max(), output.shape)
+
+    a = time.time()
+    (output**2).mean().backward()
+    print(f"Time for backward: {time.time() - a}")
 
     # optim = torch.optim.Adam(list(layer.parameters()) + list(layer2.parameters()), lr=5e-2)
     # pbar = tqdm(range(200))
