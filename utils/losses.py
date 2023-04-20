@@ -15,7 +15,7 @@ def dice_loss_with_logits_batched(logits, segm, transform='softmax', ignore_idx=
     if transform == 'softmax':
         prob = F.softmax(logits, dim=-1)
     else:
-        prob = F.sigmoid(logits)
+        prob = torch.sigmoid(logits)
 
     loss, count = 0, 0
     for d in range(D):

@@ -40,20 +40,29 @@ class AbstractResNetBasic(nn.Module):
     def __init__(self, offsets, resolutions):
         super().__init__()
         resblocks = []
-        # resblocks.append(Resblock(4, 8, resolutions, offsets))
-        # resblocks.append(Resblock(8, 16, resolutions, offsets))
+
+        ### Version 2
+        # resblocks.append(Resblock(4, 16, resolutions, offsets))
         # resblocks.append(Resblock(16, 16, resolutions, offsets))
         # resblocks.append(Resblock(16, 16, resolutions, offsets))
         # resblocks.append(Resblock(16, 8, resolutions, offsets))
-        # self.resblocks = nn.ModuleList(resblocks)
-        # # decoder
-        # self.decoder = HashRouterLayer(resolutions, offsets, num_levels=16, log_hashmap_size=19,
-        #                                   embed_channels=8, mlp_channels=[32, 32], out_channels=4)
-        resblocks.append(Resblock(4, 8, resolutions, offsets))
-        resblocks.append(Resblock(8, 8, resolutions, offsets))
-        resblocks.append(Resblock(8, 8, resolutions, offsets))
-        resblocks.append(Resblock(8, 8, resolutions, offsets))
-        resblocks.append(nn.LeakyReLU(0.1))
+        # resblocks.append(nn.LeakyReLU(0.1))
+
+        ### Version 3
+        inp = 4
+        for _ in range(7):
+            resblocks.append(AbstractConv3D(inp, 16, resolutions=resolutions, offsets=offsets))
+            resblocks.append(nn.LeakyReLU(0.05))
+            inp = 16
+        resblocks.append(AbstractConv3D(16, 8, resolutions=resolutions, offsets=offsets))
+        resblocks.append(nn.LeakyReLU(0.05))
+        
+        ### Version 1
+        # resblocks.append(Resblock(4, 8, resolutions, offsets))
+        # resblocks.append(Resblock(8, 8, resolutions, offsets))
+        # resblocks.append(Resblock(8, 8, resolutions, offsets))
+        # resblocks.append(Resblock(8, 8, resolutions, offsets))
+        # resblocks.append(nn.LeakyReLU(0.1))
         self.resblocks = nn.ModuleList(resblocks)
         self.decoder = HashRouterLayer(resolutions, offsets, num_levels=16, log_hashmap_size=19,
                                             embed_channels=8, mlp_channels=[], out_channels=4)

@@ -8,6 +8,7 @@ v2: <B, N, K1,K2,K3> blocks, hopefully faster with lot of coalescing
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/detail/KernelUtils.h>
+#include <torch/torch.h>
 #include <stdexcept>
 #include <iostream>
 #include <vector>
@@ -16,6 +17,7 @@ v2: <B, N, K1,K2,K3> blocks, hopefully faster with lot of coalescing
 #include <cuda_runtime.h>
 
 #define THREADS 512
+#define CONST_DIV 64
 #define CHECK_CUDA(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define div_up(x, n) ((x)+(n)-1)/(n)
@@ -90,6 +92,14 @@ __global__ void abstract_conv3d_forward_kernel_v4(
     int kernel_volume = K1*K2*K3;
     int iosize = input_channels*output_channels;
 
+    // make use of shared memory to pull threads
+    // __shared__ scalar_t input_chunk[THREADS];
+    // __shared__ scalar_t weight_chunk[THREADS];
+
+    // // to capture level bias in case
+    int level_bias = -1;
+    scalar_t bias_saved = 0;
+
     CUDA_KERNEL_LOOP(index, num_outputs) {
         // get n, batch index, and output channel index
         int c_out = index % output_channels;
@@ -137,8 +147,15 @@ __global__ void abstract_conv3d_forward_kernel_v4(
                 res += weight_start[c*output_channels + c_out] * input[input_index + c];
             }
         }
-        if(bias)
-            res += bias[level*output_channels + c_out];
+        // add bias if not None
+        if(bias) {
+            if(level_bias != level) {
+                level_bias = level;
+                bias_saved = bias[level*output_channels + c_out];
+            }
+            res += bias_saved;
+            // res += bias[level*output_channels + c_out];
+        }
         // write
         output[n_idx*(batch_size*output_channels) + b_idx*output_channels + c_out] = res;
     }
@@ -153,7 +170,6 @@ __global__ void abstract_conv3d_backward_input_kernel(
     const int* __restrict__ offsets,
     const int* __restrict__ resolutions,
     const scalar_t* __restrict__ weights,
-    const scalar_t* __restrict__ bias,
     const int batch_size,
     const int num_embeddings,
     const int input_channels,
@@ -214,6 +230,89 @@ __global__ void abstract_conv3d_backward_input_kernel(
             }
         }
         grad_input[n_idx*(batch_size*input_channels) + b_idx*input_channels + c_in] = res;
+    }
+}
+
+/** Second version of computing gradient of weight kernel using the block scheme of y[n, b, c]
+ * 
+ * The idea is that for y[n, b, c], we should compute w[l, *, *, *, *, c] where l ---> n
+ *  
+ * dw[l, k1, k2, k3, cin, cout] = sum_n sum_b dy[n, b, cout] * x[(n + k), b, cin]
+ * the first and second sums are divided into a temp index (which will be summed over) 
+ * this hopefully achieves a good balance between the atomicAdd operation and block utilization
+*/
+template <typename scalar_t>
+__global__ void abstract_conv3d_backward_weight_kernel_v2(
+    const scalar_t* __restrict__ grad_output,
+    scalar_t* __restrict__  grad_weights_tmp,
+    const scalar_t* __restrict__ input, 
+    const int* __restrict__ offsets,
+    const int* __restrict__ resolutions,
+    const scalar_t* __restrict__ weights,
+    const int* __restrict__ offsets_tmp,
+    const int batch_size,
+    const int num_embeddings,
+    const int input_channels,
+    const int output_channels,
+    const int K1, const int K2, const int K3,
+    const int num_levels, const int hashmap_size
+) {
+    // loop over y, and add gradient  
+    int num = batch_size * num_embeddings * output_channels;
+    int iosize = input_channels * output_channels;
+    int kernel_size = K1*K2*K3;
+
+    CUDA_KERNEL_LOOP(index, num) { 
+        // get n, batch index, and output channel index
+        int c_out = index % output_channels;
+        int b_idx = (index / output_channels) % batch_size;
+        int n_idx = (index / output_channels) / batch_size;
+        // get level information
+        int level = get_level(offsets, n_idx, num_levels);
+        int offset_lvl = offsets[level];
+        int local_n = n_idx - offset_lvl;
+        int lvl_res = resolutions[level];
+        int lvl_res3 = lvl_res*lvl_res*lvl_res;
+        // if this is a tail end, skip t
+        if(local_n >= lvl_res3)
+            continue;
+        // temp index for weight to be put in
+        int grad_offset_start = offsets_tmp[level];
+        int grad_offset_end = offsets_tmp[level+1];
+        int grad_wt_offset = local_n % (grad_offset_end - grad_offset_start) + grad_offset_start;
+        // get dy[n, b, c]
+        scalar_t yval = grad_output[index];
+        scalar_t grad_res;
+
+        for(int kernel_idx=0; kernel_idx < kernel_size; kernel_idx++) {
+            // initialize grad weight
+            // get kernel index, this is affected by
+            int k1 = (kernel_idx/(K2*K3)) - K1/2;
+            int k2 = ((kernel_idx % (K2*K3))/K3) - K2/2;
+            int k3 = (kernel_idx%K3) - K3/2;
+            // get neighboring index in x
+            int xindex;
+            int coord[3];
+            unravel_index(local_n, lvl_res, coord);
+            if(lvl_res3 > hashmap_size) {   // this is a big resolution, simply compute the (x + dx) % T
+                xindex = (compute_diff_hash(k1, k2, k3, lvl_res, hashmap_size) + local_n) % hashmap_size + offset_lvl;
+            }
+            else {  // only one point corresponds to this n, find it
+                coord[0] += k1; coord[1] += k2; coord[2] += k3;
+                if(out_of_bounds(coord, lvl_res))
+                    xindex = -1;
+                else
+                    xindex = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;
+            }
+            // compute if x_index != -1
+            if(xindex == -1)
+                continue;
+            // find x[xindex, b, c_in]
+            for(int c = 0; c < input_channels; c++) {
+                grad_res = yval * input[xindex*(batch_size*input_channels) + b_idx*input_channels + c];
+                atomicAdd(grad_weights_tmp + (grad_wt_offset*kernel_size*iosize + kernel_idx*iosize + c*output_channels + c_out), grad_res);
+            }
+        }
     }
 }
 
@@ -450,23 +549,23 @@ void abstract_conv3d_forward_wrapper(
         batch_size, num_embeddings, input_channels, output_channels,
         K1, K2, K3, num_levels, hashmap_size
     );
-
-    gpuErrchk(cudaPeekAtLastError());
-    gpuErrchk(cudaDeviceSynchronize());
+    // gpuErrchk(cudaPeekAtLastError());
+    // gpuErrchk(cudaDeviceSynchronize());
 }
 
-template<typename scalar_t>
-void abstract_conv3d_backward_wrapper(
+
+template <typename scalar_t>
+void abstract_conv3d_backward_wrapper_v2(
     const scalar_t* __restrict__ grad_output,
     scalar_t* __restrict__ grad_input,
-    scalar_t* __restrict__ grad_weights,
-    scalar_t* __restrict__ grad_bias,
+    scalar_t* __restrict__ grad_weights_tmp,
     const bool inp_requires_grad,
+    const bool weight_requires_grad,
     const scalar_t* __restrict__ input,
     const int* __restrict__ offsets,
     const int* __restrict__ resolutions,
     const scalar_t* __restrict__ weights,
-    const scalar_t* __restrict__ bias,
+    const int* __restrict__ offsets_tmp,
     const int batch_size,
     const int num_embeddings,
     const int input_channels,
@@ -480,6 +579,53 @@ void abstract_conv3d_backward_wrapper(
         // call gradient w.r.t. input
         abstract_conv3d_backward_input_kernel<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
             grad_output, grad_input, 
+            input, offsets, resolutions, weights, 
+            batch_size, num_embeddings, input_channels, output_channels,
+            K1, K2, K3, num_levels, hashmap_size
+        );
+        // gpuErrchk(cudaPeekAtLastError());
+        // gpuErrchk(cudaDeviceSynchronize());
+    }
+    if(weight_requires_grad) {
+        const uint32_t blocks = min(div_up(num_embeddings*batch_size*output_channels, THREADS), 1<<30 - 1);
+        abstract_conv3d_backward_weight_kernel_v2<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+            grad_output, grad_weights_tmp, 
+            input, offsets, resolutions, weights, offsets_tmp, 
+            batch_size, num_embeddings, input_channels, output_channels,
+            K1, K2, K3, num_levels, hashmap_size
+        );
+        // gpuErrchk(cudaPeekAtLastError());
+        // gpuErrchk(cudaDeviceSynchronize());
+    }
+}
+
+template<typename scalar_t>
+void abstract_conv3d_backward_wrapper(
+    const scalar_t* __restrict__ grad_output,
+    scalar_t* __restrict__ grad_input,
+    scalar_t* __restrict__ grad_weights,
+    scalar_t* __restrict__ grad_bias,
+    const bool inp_requires_grad,
+    const bool weight_requires_grad,
+    const scalar_t* __restrict__ input,
+    const int* __restrict__ offsets,
+    const int* __restrict__ resolutions,
+    const scalar_t* __restrict__ weights,
+    const scalar_t* __restrict__ bias,
+    const int batch_size,
+    const int num_embeddings,
+    const int input_channels,
+    const int output_channels,
+    const int K1, const int K2, const int K3,
+    const int num_levels,
+    const int hashmap_size
+) {
+    // Check for input
+    if(inp_requires_grad) {
+        const uint32_t blocks = min(div_up(num_embeddings*batch_size*input_channels, THREADS), 1<<30 - 1);
+        // call gradient w.r.t. input
+        abstract_conv3d_backward_input_kernel<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+            grad_output, grad_input, 
             input, offsets, resolutions, weights, bias,
             batch_size, num_embeddings, input_channels, output_channels,
             K1, K2, K3, num_levels, hashmap_size
@@ -487,15 +633,17 @@ void abstract_conv3d_backward_wrapper(
         gpuErrchk(cudaPeekAtLastError());
         gpuErrchk(cudaDeviceSynchronize());
     }
-    int weightblocks = K1*K2*K3*num_levels;
-    abstract_conv3d_backward_weight_kernel<<<weightblocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
-        grad_output, grad_weights, grad_bias,
-        input, offsets, resolutions, weights, bias,
-        batch_size, num_embeddings, input_channels, output_channels,
-        K1, K2, K3, num_levels, hashmap_size
-    );
-    gpuErrchk(cudaPeekAtLastError());
-    gpuErrchk(cudaDeviceSynchronize());
+    if(weight_requires_grad) {
+        int weightblocks = K1*K2*K3*num_levels;
+        abstract_conv3d_backward_weight_kernel<<<weightblocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+            grad_output, grad_weights, grad_bias,
+            input, offsets, resolutions, weights, bias,
+            batch_size, num_embeddings, input_channels, output_channels,
+            K1, K2, K3, num_levels, hashmap_size
+        );
+        gpuErrchk(cudaPeekAtLastError());
+        gpuErrchk(cudaDeviceSynchronize());
+    }
 }
 
 torch::Tensor abstract_conv3d_forward(torch::Tensor input, torch::Tensor output, torch::Tensor offsets, torch::Tensor resolutions,
@@ -511,7 +659,6 @@ torch::Tensor abstract_conv3d_forward(torch::Tensor input, torch::Tensor output,
     num_levels: int (L)
     hashmap_size: int (H)
     */
-
     CHECK_CUDA(input);
     CHECK_CUDA(output);
     CHECK_CUDA(offsets);
@@ -557,9 +704,12 @@ torch::Tensor abstract_conv3d_forward(torch::Tensor input, torch::Tensor output,
 }
 
 std::vector<at::optional<torch::Tensor>> abstract_conv3d_backward(torch::Tensor grad_output, torch::Tensor grad_input, torch::Tensor grad_weight, at::optional<torch::Tensor> grad_bias,
-        bool inp_requires_grad, torch::Tensor input, torch::Tensor offsets, torch::Tensor resolutions,
+        bool inp_requires_grad, bool weight_requires_grad, torch::Tensor input, torch::Tensor offsets, torch::Tensor resolutions,
         torch::Tensor weight, at::optional<torch::Tensor> bias, int num_levels, int hashmap_size) {
-    /* Kernel for backward pass */
+    /* 
+    ****** VERSION 1 ******
+    Kernel for backward pass 
+    */
     // define extra variables
     const int num_embeddings = input.size(0);
     const int batch_size = input.size(1);
@@ -570,13 +720,70 @@ std::vector<at::optional<torch::Tensor>> abstract_conv3d_backward(torch::Tensor 
     const int k2 = weight.size(2);
     const int k3 = weight.size(3);
     // call kernels
+    // AT_DISPATCH_FLOATING_TYPES(
+    // input.scalar_type(), "abstract_conv3d_backward_wrapper", ([&] {
+    //     abstract_conv3d_backward_wrapper<scalar_t>(
+    //         grad_output.data_ptr<scalar_t>(), grad_input.data_ptr<scalar_t>(), grad_weight.data_ptr<scalar_t>(), grad_bias.has_value() ? grad_bias.value().data_ptr<scalar_t>() : nullptr,
+    //         inp_requires_grad, weight_requires_grad, input.data_ptr<scalar_t>(), offsets.data_ptr<int>(), resolutions.data_ptr<int>(), weight.data_ptr<scalar_t>(), \
+    //         bias.has_value() ? bias.value().data_ptr<scalar_t>() : nullptr, batch_size, num_embeddings, input_channels, output_channels, k1, k2, k3, num_levels, hashmap_size);
+    // }));
+
+    /* 
+    ****** VERSION 2 ******
+    Use a temporary storage for storing gradient of weight
+    gradient of bias is easy, simply loop over `num_levels` and take sum of that corresponding chunk
+    */
+
+    // compute factor to put temp weights in
+    int cmin = min(input_channels, output_channels);
+    int temp_weight_downsample_factor = div_up(k1*k2*k3*cmin, batch_size);
+
+    bool grad_bias_exists = grad_bias.has_value();
+    torch::Tensor grad_weight_tmp, offsets_tmp;
+    offsets_tmp = offsets.clone();
+    int total_tmp_sum = 0;   // number of entries in temp grad table
+
+    if(weight_requires_grad) {
+        // compute bias level, and get tmp weight and offsets
+        int offset_start = offsets.index({0}).item<int>();
+        for(int i=0; i<num_levels; i++) {
+            int offset_end = offsets.index({i+1}).item<int>();
+            int lvl_res = resolutions.index({i}).item<int>();
+            int level_size = offset_end - offset_start;
+            if(grad_bias_exists)
+                grad_bias.value().index({i}) = grad_output.slice(0, offset_start, offset_start+level_size).sum(0).sum(0);
+            // for next level
+            offset_start = offset_end;
+            // set the offset for tmp weight too
+            int tmp_level_size = div_up(level_size, temp_weight_downsample_factor);
+            total_tmp_sum += tmp_level_size;   // total_sum = sum of all sizes for all levels upto i
+            offsets_tmp.index({i+1}) = total_tmp_sum;
+        }
+        grad_weight_tmp = torch::zeros({total_tmp_sum, k1, k2, k3, input_channels, output_channels}, torch::TensorOptions().dtype(grad_weight.dtype()).layout(grad_weight.layout()).device(grad_weight.device().type(), grad_weight.device().index()));
+    }
+    else {
+        grad_weight_tmp = torch::zeros({1}, torch::TensorOptions().dtype(grad_weight.dtype()).layout(grad_weight.layout()).device(grad_weight.device().type(), grad_weight.device().index()));
+    }
     AT_DISPATCH_FLOATING_TYPES(
-    input.scalar_type(), "abstract_conv3d_backward_wrapper", ([&] {
-        abstract_conv3d_backward_wrapper<scalar_t>(
-            grad_output.data_ptr<scalar_t>(), grad_input.data_ptr<scalar_t>(), grad_weight.data_ptr<scalar_t>(), grad_bias.has_value() ? grad_bias.value().data_ptr<scalar_t>() : nullptr,
-            inp_requires_grad, input.data_ptr<scalar_t>(), offsets.data_ptr<int>(), resolutions.data_ptr<int>(), weight.data_ptr<scalar_t>(), \
-            bias.has_value() ? bias.value().data_ptr<scalar_t>() : nullptr, batch_size, num_embeddings, input_channels, output_channels, k1, k2, k3, num_levels, hashmap_size);
+        input.scalar_type(), "abstract_conv3d_backward_wrapper", ([&] {
+            abstract_conv3d_backward_wrapper_v2<scalar_t>(
+                grad_output.data_ptr<scalar_t>(), grad_input.data_ptr<scalar_t>(), grad_weight_tmp.data_ptr<scalar_t>(), 
+                inp_requires_grad, weight_requires_grad, input.data_ptr<scalar_t>(), offsets.data_ptr<int>(), 
+                resolutions.data_ptr<int>(), weight.data_ptr<scalar_t>(), 
+                offsets_tmp.data_ptr<int>(),
+                batch_size, num_embeddings, input_channels, output_channels, k1, k2, k3, num_levels, hashmap_size);
     }));
-    // return ret;
+
+    // TODO: Run aggregation over weight pointer
+    if(weight_requires_grad) {
+        int offset_start = offsets_tmp.index({0}).item<int>();
+        int offset_end;
+        for(int i=0; i<num_levels; i++)  {
+            offset_end = offsets_tmp.index({i+1}).item<int>();
+            grad_weight.index({i}) = grad_weight_tmp.slice(0, offset_start, offset_end).sum(0);
+            offset_start = offset_end; // update the new starting point
+        }
+    }
+
     return {grad_input, grad_weight, grad_bias};
 }

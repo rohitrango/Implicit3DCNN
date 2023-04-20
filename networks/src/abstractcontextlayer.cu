@@ -203,8 +203,8 @@ void abstract_contextlayer_backward_wrapper(const scalar_t* grad_output, scalar_
     abstract_contextlayer_backward_kernel<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
         grad_output, grad_input, offsets, resolutions, batch_size, num_embeddings, input_channels, num_levels, hashmap_size
     );
-    gpuErrchk(cudaPeekAtLastError());
-    gpuErrchk(cudaDeviceSynchronize());
+    // gpuErrchk(cudaPeekAtLastError());
+    // gpuErrchk(cudaDeviceSynchronize());
 }
 
 template <typename scalar_t>
@@ -214,8 +214,8 @@ void abstract_contextlayer_forward_wrapper(const scalar_t *input, scalar_t *outp
     const uint32_t blocks = min(div_up(num_embeddings*batch_size*input_channels, THREADS), 1<<30 - 1);
     abstract_contextlayer_forward_kernel<<<blocks, THREADS, 0,  at::cuda::getCurrentCUDAStream()>>>(
         input, output, offsets, resolutions, batch_size, num_embeddings, input_channels, num_levels, hashmap_size);
-    gpuErrchk(cudaPeekAtLastError());
-    gpuErrchk(cudaDeviceSynchronize());
+    // gpuErrchk(cudaPeekAtLastError());
+    // gpuErrchk(cudaDeviceSynchronize());
 }
 
 torch::Tensor abstract_contextlayer_forward(torch::Tensor input, torch::Tensor output, torch::Tensor offsets, torch::Tensor resolutions,

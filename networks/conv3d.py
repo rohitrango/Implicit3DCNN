@@ -40,15 +40,17 @@ class _abstract_conv3d(Function):
         num_levels = int(num_levels.item())
         hashmap_size = int(hashmap_size.item())
         inp_requires_grad = bool(inp_requires_grad.item())
+        weight_requires_grad = bool(weight.requires_grad) or (bias is not None and bool(bias.requires_grad))
         # get outputs
         input_grad = torch.zeros_like(input, dtype=input.dtype, device=input.device)
         weight_grad = torch.zeros_like(weight, dtype=weight.dtype, device=weight.device)
         bias_grad   = torch.zeros_like(bias, dtype=bias.dtype, device=bias.device) if bias is not None else None
-        # a = time.time()
+        ## Manually override gradient computation for testing 
+        # weight_requires_grad = False
+        # inp_requires_grad = False
+        # print(f"input requires_grad : {inp_requires_grad}, weight requires_grad : {weight_requires_grad}")
         input_grad, weight_grad, bias_grad = _backend.abstract_conv3d_backward(grad_outputs, input_grad, weight_grad, bias_grad, \
-                                                                               inp_requires_grad, input, offsets, resolutions, weight, bias, num_levels, hashmap_size)
-        # print("backward time: ", time.time() - a)
-        # backward pass
+                                                                               inp_requires_grad, weight_requires_grad, input, offsets, resolutions, weight, bias, num_levels, hashmap_size)
         return input_grad, None, None, weight_grad, bias_grad, None, None
 
 abstractConv3DFunction = _abstract_conv3d.apply
@@ -149,7 +151,6 @@ if __name__ == '__main__':
     encoder = ge.GridEncoder(desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=L).cuda()
     embed = encoder.embeddings[:, None].contiguous() * 1e3  # [1, N, 2]
     embed = embed.detach()
-    print(embed.min(), embed.max())
     # embed = embed.expand(4, -1, -1).contiguous()
     resolutions = encoder.resolutions
     offsets = encoder.offsets
@@ -189,7 +190,7 @@ if __name__ == '__main__':
     #     optim.step()
     #     print(loss.item())
 
-    layer = AbstractConv3D(2, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
+    layer = AbstractConv3D(2, 4, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
     # layer2 = AbstractConv3D(8, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
 
     from networks.contextlayer import abstractContextFunction
@@ -208,6 +209,7 @@ if __name__ == '__main__':
     # # compute time
     # embed = embed.expand(-1, 32, -1).contiguous()
     a = time.time()
+    embed = embed.expand(-1, 4, -1).contiguous().detach()
     embed.requires_grad = True
     output = layer(embed)
     print(f"Time for conv3d: {time.time() - a}")
@@ -217,6 +219,7 @@ if __name__ == '__main__':
     a = time.time()
     (output**2).mean().backward()
     print(f"Time for backward: {time.time() - a}")
+    input()
 
     # optim = torch.optim.Adam(list(layer.parameters()) + list(layer2.parameters()), lr=5e-2)
     # pbar = tqdm(range(200))

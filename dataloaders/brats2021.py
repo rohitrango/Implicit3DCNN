@@ -139,6 +139,9 @@ class BRATS2021EncoderSegDataset(Dataset):
         data = dict(torch.load(encoderfile, map_location='cpu'))
         data['embeddings'] = data['embeddings'][:, None]   # [N, 1, C]
         data['embeddings'] /= 0.05
+        if self.train:
+            scale = np.random.rand()*0.4 + 0.8
+            data['embeddings'] = data['embeddings'] * scale  # scale augmentation
         # load segmentation
         seg = torch.from_numpy(nib.load(segmfile).get_fdata()).int() 
         seg[seg == 4] = 3
