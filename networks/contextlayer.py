@@ -50,7 +50,7 @@ class AbstractContextLayer(nn.Module):
         if affine:
             self.affine = nn.Linear(channels_in, channels_out)
             nn.init.zeros_(self.affine.bias)
-            nn.init.kaiming_normal_(self.affine.weight, nonlinearity='leaky_relu')
+            nn.init.kaiming_uniform_(self.affine.weight, nonlinearity='leaky_relu')
         # hash encoding params
         self.num_levels = num_levels
         self.hashmap_size = int(2**log_hashmap_size) 

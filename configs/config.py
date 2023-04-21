@@ -1,6 +1,7 @@
 from yacs.config import CfgNode as CN
 
 _C = CN()
+_C.EXP_NAME = ""     # can be used by the script
 seg = _C.SEG = CN()  # segmentation config
 
 ## run segmentation config here
@@ -37,6 +38,14 @@ enc.LEVEL_DIM = 4
 enc.DESIRED_RESOLUTION = 196
 
 net = _C.NETWORK = CN()
+net.NAME = "AbstractContextResNet"
+net.BLOCK_CHANNELS = [16, 16, 16, 8]
+net.BLOCK_NUM_LAYERS = [2, 2, 2, 2]
+net.ACTIVATION = 'LeakyReLU'
+net.ACTIVATION_PARAM = 0.05
+net.INPUT_CHANNELS = 4
+net.OUTPUT_CHANNELS = 4
+
 
 def get_cfg_defaults():
     return _C.clone()

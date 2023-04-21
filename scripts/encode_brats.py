@@ -36,11 +36,13 @@ parser.add_argument('--cfg_file', type=str, required=True)
 parser.add_argument('--root_dir', type=str, help='Path to the BRATS directory', default="/data/BRATS2021/training/")
 parser.add_argument('--output_dir', type=str, required=True, help='Path to the output directory', default="/data/Implicit3DCNNTasks/brats2021/")
 parser.add_argument('--skip_stage1', action='store_true', help='Skip stage 1 and load the decoder from the output directory')
+parser.add_argument('opts', default=None, nargs=argparse.REMAINDER)
 
 if __name__ == '__main__':
     args = parser.parse_args()
     cfg = get_cfg_defaults()
     cfg.merge_from_file(args.cfg_file)
+    cfg.merge_from_list(args.opts)
     # multimodal configs
     multimodal = cfg.ENCODE.MULTIMODAL
     mlabel = cfg.ENCODE.MLABEL

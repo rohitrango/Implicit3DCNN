@@ -16,6 +16,7 @@ from utils.util import crop_collate_fn, format_raw_gt_to_brats
 import tensorboardX
 import os
 from torch.utils.data import DataLoader
+from os import path as osp
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--exp_name', type=str, required=True, help='Name of experiment')
@@ -23,7 +24,7 @@ parser.add_argument('--cfg_file', type=str, default='configs/brats_basic_seg.yam
 parser.add_argument('opts', default=None, nargs=argparse.REMAINDER)
 
 @torch.no_grad()
-def eval_validation_data(cfg, network, val_dataset, epoch=None, writer=None):
+def eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=None, writer=None, stop_at=None):
     '''
     Check for validation performance here
     '''
@@ -33,8 +34,8 @@ def eval_validation_data(cfg, network, val_dataset, epoch=None, writer=None):
         gt_segms = []
         pred_segms = []
         for idx in tqdm(range(len(val_dataset))):
-            if idx == 400:
-                break
+            if stop_at is not None and idx >= stop_at:
+                break 
             datum = val_dataset[idx]
             embed = datum['embeddings'].cuda()
             coords = datum['xyz'].cuda() / (datum['dims'][None].cuda() - 1) * 2 - 1
@@ -77,8 +78,22 @@ def eval_validation_data(cfg, network, val_dataset, epoch=None, writer=None):
             valepoch = -1 if epoch is None else epoch
             writer.add_scalar(f'val/dice_mean_{name}', np.mean(dice_scores[i]), valepoch)
 
+        # Check if these are the best metrics
+        if epoch is not None:
+            this_dice = np.mean([np.mean(dice_scores[i]) for i in range(len(names))])
+            # see if the mean dice is better than what we have!
+            if this_dice > np.mean([best_metrics.get(n, -np.inf) for n in names]):
+                for i, n in enumerate(names):
+                    best_metrics[n] = np.mean(dice_scores[i])
+                # save model
+                torch.save({'network': network.state_dict(),  'metrics': best_metrics}, osp.join(cfg.EXP_NAME + "_best_model.pth"))
+                print("Saved best model.\n")
+
+    # check for a keyboard interrupt to skip
     except KeyboardInterrupt:
         print("Skipping validation")
+    
+    return best_metrics
     
 
 if __name__ == '__main__':
@@ -88,6 +103,7 @@ if __name__ == '__main__':
     cfg.merge_from_file(args.cfg_file)
     cfg.merge_from_list(args.opts)
     print(cfg)
+    cfg.EXP_NAME = osp.join('experiments/', args.exp_name)
 
     if os.path.exists('experiments/' + args.exp_name):
         print(f"Experiment {args.exp_name} already exists. Please delete it first.")
@@ -103,7 +119,7 @@ if __name__ == '__main__':
                                   pin_memory=True)
 
     # compute offsets and resolutions
-    dummy = GridEncoder(level_dim=4, desired_resolution=196, gridtype='tiled', align_corners=True, log2_hashmap_size=19)
+    dummy = GridEncoder(level_dim=cfg.ENCODE.LEVEL_DIM, desired_resolution=cfg.ENCODE.DESIRED_RESOLUTION, gridtype='tiled', align_corners=True, log2_hashmap_size=19)
     resolutions = dummy.resolutions.cuda()
     offsets = dummy.offsets.cuda()
     del dummy
@@ -113,7 +129,14 @@ if __name__ == '__main__':
     optim = get_optimizer(cfg, network)
     lr_scheduler = get_scheduler(cfg, optim)
 
-    eval_validation_data(cfg, network, val_dataset, epoch=None, writer=writer)
+    # extra loss config here
+    use_ce_loss = cfg.SEG.WEIGHT_CE <= 0
+
+    # keep track of best metrics
+    best_metrics = dict()
+
+    # Eval in the beginning once
+    eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=None, writer=writer, stop_at=400)
     # train
     for epoch in range(cfg.TRAIN.EPOCHS):
         # perm = tqdm(np.random.permutation(len(train_dataset)))
@@ -134,20 +157,22 @@ if __name__ == '__main__':
             logits = network(embed, coords)  # [N, B, out]
             logits = logits.permute(1, 0, 2) # [B, N, out]
             # check for what mode are we training in
+            ce_loss = torch.tensor(0, device=logits.device)
             if cfg.TRAIN.BRATS_SEGM_MODE == 'raw':
-                ce_loss = F.cross_entropy(logits.permute(0, 2, 1), gt_segm.long()) 
+                # check if we should use CE loss
+                if use_ce_loss:
+                    ce_loss = F.cross_entropy(logits.permute(0, 2, 1), gt_segm.long()) 
                 dice_loss = dice_loss_with_logits_batched(logits, gt_segm, cfg.TRAIN.LOGIT_TRANSFORM, ignore_idx=0)
             else:
                 gt_segm_bratsformat = format_raw_gt_to_brats(gt_segm)
-                ce_losses = [F.binary_cross_entropy_with_logits(logits[..., i+1], gt_segm_bratsformat[i]) for i in range(3)]
-                ce_loss = 0
-                for ce in ce_losses:
-                    ce_loss += ce
-                ce_loss /= 3
+                # check if we should use CE loss
+                if use_ce_loss:
+                    ce_losses = [F.binary_cross_entropy_with_logits(logits[..., i+1], gt_segm_bratsformat[i]) for i in range(3)]
+                    ce_loss = 0
+                    for ce in ce_losses:
+                        ce_loss += ce
+                    ce_loss /= 3
                 dice_loss = dice_loss_with_logits_batched(logits, gt_segm_bratsformat, 'sigmoid', ignore_idx=0)
-
-            if cfg.SEG.WEIGHT_CE <= 0:
-                ce_loss = ce_loss.detach()*0
 
             loss = cfg.SEG.WEIGHT_DICE * dice_loss + cfg.SEG.WEIGHT_CE * ce_loss
             loss.backward()
@@ -157,4 +182,5 @@ if __name__ == '__main__':
             writer.add_scalar('train/ce_loss', ce_loss.item(), epoch*len(train_dataloader)+i)
             writer.add_scalar('train/dice_loss', dice_loss.item(), epoch*len(train_dataloader)+i)
         lr_scheduler.step()
-        eval_validation_data(cfg, network, val_dataset, epoch, writer=writer)
+        # val and save 
+        best_metrics = eval_validation_data(cfg, network, val_dataset, best_metrics, epoch, writer=writer, stop_at=400)

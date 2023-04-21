@@ -4,18 +4,24 @@ from networks.contextlayer import AbstractContextLayer
 from networks.conv3d import AbstractConv3D, HashRouterLayer
 
 class Resblock(nn.Module):
+    '''
+    General residual block containing convolutions+non-linearity followed by residual block 
+    the residual block can either be a simple per-grid layer, or a context layer which interpolates
+    features from the previous grid
+    '''
     def __init__(self, in_channels, out_channels, resolutions, offsets, layers=2, context=True, affine_context=True, 
                  kernel_size=3,
                  num_levels=16, log_hashmap_size=19, activation=nn.LeakyReLU(negative_slope=0.1)):
         super().__init__()
         self.context = None
         self.activation = activation
-        if in_channels != out_channels:
+        if context:
             self.context = AbstractContextLayer(in_channels, out_channels, resolutions=resolutions, offsets=offsets, \
-                                                 affine=True, num_levels=num_levels, log_hashmap_size=log_hashmap_size)
-        elif context:
-            self.context = AbstractContextLayer(in_channels, out_channels, resolutions=resolutions, offsets=offsets, \
-                                                affine=affine_context, num_levels=num_levels, log_hashmap_size=log_hashmap_size)
+                                    affine=(in_channels!=out_channels or affine_context), num_levels=num_levels, log_hashmap_size=log_hashmap_size)
+        else:
+            self.context = nn.Linear(in_channels, out_channels)
+            nn.init.kaiming_uniform_(self.context.weight)
+            nn.init.zeros_(self.context.bias)
         # define convolutions
         convs = []
         for _ in range(layers):
@@ -36,40 +42,26 @@ class Resblock(nn.Module):
         return x
 
 
-class AbstractResNetBasic(nn.Module):
-    def __init__(self, offsets, resolutions):
+class AbstractGeneralResNet(nn.Module):
+    ''' General class for using Abstract ResNet with Context module '''
+    def __init__(self, input_channels, output_channels, offsets, resolutions, blocks, num_layers_per_block, activation, context=True):
         super().__init__()
         resblocks = []
+        for out_channels, n_layers in zip(blocks, num_layers_per_block):
+            resblocks.append(Resblock(input_channels, out_channels, resolutions, offsets, n_layers, context=context))
+            resblocks.append(activation)
+            input_channels = out_channels
+        # add a final MLP layer to make channel size to if does not exist (because GridEncoder doesnt support higher grid sizes)
+        if input_channels > 8:
+            resblocks.append(nn.Linear(input_channels, 8))
+            resblocks.append(activation)
+            input_channels = 8
 
-        ### Version 2
-        # resblocks.append(Resblock(4, 16, resolutions, offsets))
-        # resblocks.append(Resblock(16, 16, resolutions, offsets))
-        # resblocks.append(Resblock(16, 16, resolutions, offsets))
-        # resblocks.append(Resblock(16, 8, resolutions, offsets))
-        # resblocks.append(nn.LeakyReLU(0.1))
-
-        ### Version 3
-        inp = 4
-        for _ in range(7):
-            resblocks.append(AbstractConv3D(inp, 16, resolutions=resolutions, offsets=offsets))
-            resblocks.append(nn.LeakyReLU(0.05))
-            inp = 16
-        resblocks.append(AbstractConv3D(16, 8, resolutions=resolutions, offsets=offsets))
-        resblocks.append(nn.LeakyReLU(0.05))
-        
-        ### Version 1
-        # resblocks.append(Resblock(4, 8, resolutions, offsets))
-        # resblocks.append(Resblock(8, 8, resolutions, offsets))
-        # resblocks.append(Resblock(8, 8, resolutions, offsets))
-        # resblocks.append(Resblock(8, 8, resolutions, offsets))
-        # resblocks.append(nn.LeakyReLU(0.1))
-        self.resblocks = nn.ModuleList(resblocks)
+        self.resblocks = nn.ModuleList(self.resblocks)
+        # TODO: Make decoder parameters more flexible
         self.decoder = HashRouterLayer(resolutions, offsets, num_levels=16, log_hashmap_size=19,
-                                            embed_channels=8, mlp_channels=[], out_channels=4)
+                                    embed_channels=input_channels, mlp_channels=[], out_channels=output_channels)
 
-        self.resolutions = resolutions
-        self.offsets = offsets
-    
     def forward(self, embedding, x):
         # embedding = [M, B, C]
         # x = [N, B, C]
@@ -77,4 +69,40 @@ class AbstractResNetBasic(nn.Module):
             embedding = resblock(embedding)
         y = self.decoder(x, embedding)
         return y 
+
+def AbstractContextResNet(input_channels, output_channels, offsets, resolutions, blocks, num_layers_per_block, activation):
+    ''' a function that calls the general resnet with context variable set to True '''
+    return AbstractGeneralResNet(input_channels, output_channels, offsets, resolutions, blocks, num_layers_per_block, activation, context=True)
+
+def AbstractResNet(input_channels, output_channels, offsets, resolutions, blocks, num_layers_per_block, activation):
+    ''' just a function that calls the general resnet with context variable set to False '''
+    return AbstractGeneralResNet(input_channels, output_channels, offsets, resolutions, blocks, num_layers_per_block, activation, context=False)
+
+
+class ConvBlocks(nn.Module):
+    '''
+    Just a concatenation of conv blocks followed by non-linear activation
+    '''
+    def __init__(self, input_channels, output_channels, offsets, resolutions, blocks, activation):
+        super().__init__()
+        convblocks = []
+        for out_channels in blocks:
+            convblocks.append(AbstractConv3D(input_channels, out_channels, resolutions, offsets))
+            convblocks.append(activation)
+            input_channels = out_channels
+        if input_channels > 8:
+            convblocks.append(nn.Linear(input_channels, 8))
+            convblocks.append(activation)
+            input_channels = 8
+            
+        self.convs = nn.Sequential(convblocks)
+        ## decoder
+        self.decoder = HashRouterLayer(resolutions, offsets, num_levels=16, log_hashmap_size=19,
+                                    embed_channels=input_channels, mlp_channels=[], out_channels=output_channels)
     
+    def forward(self, embedding, x):
+        # embedding = [M, B, C]
+        # x = [N, B, C]
+        embedding = self.convs(embedding)
+        y = self.decoder(x, embedding)
+        return y 
