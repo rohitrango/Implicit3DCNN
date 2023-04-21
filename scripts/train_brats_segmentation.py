@@ -146,6 +146,9 @@ if __name__ == '__main__':
                 ce_loss /= 3
                 dice_loss = dice_loss_with_logits_batched(logits, gt_segm_bratsformat, 'sigmoid', ignore_idx=0)
 
+            if cfg.SEG.WEIGHT_CE <= 0:
+                ce_loss = ce_loss.detach()*0
+
             loss = cfg.SEG.WEIGHT_DICE * dice_loss + cfg.SEG.WEIGHT_CE * ce_loss
             loss.backward()
             optim.step()
