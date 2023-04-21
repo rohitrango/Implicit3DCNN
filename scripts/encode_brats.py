@@ -11,6 +11,8 @@ from os import path as osp
 import numpy as np
 from torch.nn import functional as F
 import gc
+from configs.config import get_cfg_defaults
+import os
 
 def _to_cpu(state_dict):
     if isinstance(state_dict, torch.Tensor):
@@ -30,25 +32,42 @@ def _to_cpu(state_dict):
     return state_dict
 
 parser = argparse.ArgumentParser(description='Encode the BRATS dataset into our representation')
+parser.add_argument('--cfg_file', type=str, required=True)
 parser.add_argument('--root_dir', type=str, help='Path to the BRATS directory', default="/data/BRATS2021/training/")
-parser.add_argument('--output_dir', type=str, help='Path to the output directory', default="/data/Implicit3DCNNTasks/brats2021/")
-parser.add_argument('--num_epochs_stage1', type=int, help='Number of epochs for learning decoder', default=20)
-parser.add_argument('--num_epochs_stage2', type=int, help='Number of epochs for learning encoders', default=500)
-parser.add_argument('--num_images_to_train', type=int, help='Number of images to train in stage 1', default=250)
-parser.add_argument('--num_points', type=int, help='Number of points to sample', default=100000)
+parser.add_argument('--output_dir', type=str, required=True, help='Path to the output directory', default="/data/Implicit3DCNNTasks/brats2021/")
 parser.add_argument('--skip_stage1', action='store_true', help='Skip stage 1 and load the decoder from the output directory')
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    dataset = BRATS2021Dataset(root_dir=args.root_dir, augment=False, num_points=args.num_points)
-    encoder = GridEncoder(level_dim=4, desired_resolution=196, gridtype='tiled', align_corners=True).cuda()
+    cfg = get_cfg_defaults()
+    cfg.merge_from_file(args.cfg_file)
+    # multimodal configs
+    multimodal = cfg.ENCODE.MULTIMODAL
+    mlabel = cfg.ENCODE.MLABEL
+
+    if osp.exists(args.output_dir) and multimodal:
+        print(f"Path {args.output_dir} exists and multimodal mode is on.")
+        exit(0)
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    dataset = BRATS2021Dataset(root_dir=args.root_dir, augment=False, num_points=cfg.ENCODE.NUM_POINTS, multimodal=cfg.ENCODE.MULTIMODAL, mlabel=cfg.ENCODE.MLABEL)
+    encoder = GridEncoder(level_dim=cfg.ENCODE.LEVEL_DIM, desired_resolution=cfg.ENCODE.DESIRED_RESOLUTION, gridtype='tiled', align_corners=True).cuda()
     encoder_params = []
+    print(f"Using multimodal = {multimodal} with mlabel = {mlabel}")
     # save a copy of state dict for each image
-    decoder = nn.Sequential(
-        nn.Linear(64, 256),
-        nn.LeakyReLU(),
-        nn.Linear(256, 4)
-    ).cuda()
+    if multimodal:
+        decoder = nn.Sequential(
+            nn.Linear(encoder.num_levels * encoder.level_dim, 256),
+            nn.LeakyReLU(),
+            nn.Linear(256, 4)
+        ).cuda()
+    else:
+        decoder = nn.Sequential(
+            nn.Linear(encoder.num_levels * encoder.level_dim, 256),
+            nn.LeakyReLU(),
+            nn.Linear(256, 1)
+        ).cuda()
+
     # initialize encoder and decoder optims
     encoder_lr = 1e-2
     decoder_lr = 1e-3
@@ -56,11 +75,11 @@ if __name__ == '__main__':
     decoder_optim = torch.optim.Adam(decoder.parameters(), lr=decoder_lr, weight_decay=1e-6)
     encoder_optim_params = dict()
     if not args.skip_stage1:
-        for i in tqdm(range(args.num_images_to_train)):
-            encoder_params.append(GridEncoder(level_dim=4, desired_resolution=196, gridtype='tiled', align_corners=True).state_dict())
+        for i in tqdm(range(cfg.ENCODE.STAGE1_TRAIN_IMAGES)):
+            encoder_params.append(GridEncoder(level_dim=cfg.ENCODE.LEVEL_DIM, desired_resolution=cfg.ENCODE.DESIRED_RESOLUTION, gridtype='tiled', align_corners=True).state_dict())
         # run this
-        for epoch in range(args.num_epochs_stage1):
-            idxperm = np.random.permutation(args.num_images_to_train) 
+        for epoch in range(cfg.ENCODE.NUM_EPOCHS_STAGE1):
+            idxperm = np.random.permutation(cfg.ENCODE.STAGE1_TRAIN_IMAGES) 
             pbar = tqdm(idxperm)
             loss_avg = []
             for idx in pbar:
@@ -88,13 +107,13 @@ if __name__ == '__main__':
                 encoder_optim_params[idx] = _to_cpu(encoder_optim.state_dict())
         
         # save decoder
-        torch.save(decoder.state_dict(), osp.join(args.output_dir, "decoder.pth"))
-        torch.save(decoder_optim.state_dict(), osp.join(args.output_dir, "decoder_optim.pth"))
+        torch.save(decoder.state_dict(), osp.join(args.output_dir, "decoder.pth" if multimodal else f"decoder{mlabel}.pth"))
+        torch.save(decoder_optim.state_dict(), osp.join(args.output_dir, "decoder_optim.pth" if multimodal else f"decoder_optim{mlabel}.pth"))
         print("Saved decoder, preparing for stage 2...")
         decoder_optim.zero_grad()
     else:
         print("Loading decoder from output directory...")
-        decoder.load_state_dict(torch.load(osp.join(args.output_dir, "decoder.pth")), strict=True)
+        decoder.load_state_dict(torch.load(osp.join(args.output_dir, "decoder.pth" if multimodal else f"decoder{mlabel}.pth")), strict=True)
 
     decoder.eval()
     for p in decoder.parameters():
@@ -106,10 +125,10 @@ if __name__ == '__main__':
     gc.collect()
 
     ## Stage 2
-    dataset = BRATS2021Dataset(root_dir=args.root_dir, augment=False, num_points=args.num_points, sample='full')
+    dataset = BRATS2021Dataset(root_dir=args.root_dir, augment=False, num_points=cfg.ENCODE.NUM_POINTS, multimodal=cfg.ENCODE.MULTIMODAL, mlabel=cfg.ENCODE.MLABEL, sample='full')
     pbar = tqdm(range(len(dataset)))
     for idx in pbar:
-        encoder = GridEncoder(level_dim=4, desired_resolution=196, gridtype='tiled', align_corners=True).cuda()
+        encoder = GridEncoder(level_dim=cfg.ENCODE.LEVEL_DIM, desired_resolution=cfg.ENCODE.DESIRED_RESOLUTION, gridtype='tiled', align_corners=True).cuda()
         encoder_optim = torch.optim.Adam(encoder.parameters(), lr=encoder_lr)
         # retrieve the data
         datum = dataset[idx]
@@ -118,9 +137,9 @@ if __name__ == '__main__':
         image = datum['imgpoints'].cuda()
         total_points = image.shape[0]
         subj = datum['subj']
-        for i in range(args.num_epochs_stage2):
+        for i in range(cfg.ENCODE.NUM_EPOCHS_STAGE2):
             encoder_optim.zero_grad()
-            minibatch = np.random.randint(total_points, size=(args.num_points))
+            minibatch = np.random.randint(total_points, size=(cfg.ENCODE.NUM_POINTS))
             xyzminibatch = xyzfloat[minibatch]
             imageminibatch = image[minibatch]
             # load the data
@@ -128,7 +147,7 @@ if __name__ == '__main__':
             # loss and backward
             loss = F.mse_loss(pred_minibatch, imageminibatch)
             loss.backward()
-            pbar.set_description("subj: {} iter: {}/{}, Loss: {:06f}".format(subj, i, args.num_epochs_stage2, loss.item()))
+            pbar.set_description("subj: {} iter: {}/{}, Loss: {:06f}".format(subj, i, cfg.ENCODE.NUM_EPOCHS_STAGE2, loss.item()))
             encoder_optim.step()
         # finished training, save the encoder
-        torch.save(encoder.state_dict(), osp.join(args.output_dir, "encoder_{}.pth".format(subj)))
+        torch.save(encoder.state_dict(), osp.join(args.output_dir, "encoder_{}{}.pth".format(subj, "" if multimodal else f"_{mlabel}")))

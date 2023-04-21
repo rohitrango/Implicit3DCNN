@@ -11,8 +11,10 @@ class BRATS2021Dataset(Dataset):
     Images are of size (155, 240, 240)
     sample modes are 'random', 'full' (for random and full sampling of points), 
                     'randomseg', 'fullseg' (for random and full sampling of points and the segmentation mask)
+    multimodal: should we try to encode multimodal inputs
+    mlabel: if multimodal is false, which channels to use
     '''
-    def __init__(self, root_dir, augment=True, sample='random', num_points=25000):
+    def __init__(self, root_dir, augment=True, sample='random', num_points=25000, multimodal=True, mlabel=0):
         super().__init__()
         self.root_dir = root_dir
         self.augment = augment
@@ -25,6 +27,8 @@ class BRATS2021Dataset(Dataset):
             allniftis = sorted(glob(osp.join(dir, '*.nii.gz')))
             segnifti = [n for n in allniftis if 'seg' in n][0]
             inputsnifti = [n for n in allniftis if 'seg' not in n]
+            if not multimodal:
+                inputsnifti = [inputsnifti[mlabel]]
             self.files[dir] = inputsnifti
             self.seg[dir] = segnifti
     
@@ -68,7 +72,7 @@ class BRATS2021Dataset(Dataset):
         imgpoints, segpoints = None, None
         if 'random' in self.sample:
             xyz = [torch.randint(0, dim, size=(self.num_points,)) for dim in [H, W, D]]
-            imgpoints = torch.cat([img[xyz[0], xyz[1], xyz[2], None] for img in images], dim=1)  # [num_points, 4]
+            imgpoints = torch.cat([img[xyz[0], xyz[1], xyz[2], None] for img in images], dim=1)  # [num_points, num_outs]
             if seg is not None:
                 segpoints = seg[xyz[0], xyz[1], xyz[2]]
             xyz = torch.stack(xyz, dim=1).int()  # [num_points, 3]
@@ -76,7 +80,7 @@ class BRATS2021Dataset(Dataset):
         elif 'full' in self.sample:
             xyz = torch.meshgrid([torch.arange(0, dim,) for dim in [H, W, D]], indexing='ij')  # [H, W, D]
             xyz = torch.stack(xyz, dim=-1).view(-1, 3)  # [H*W*D, 3]
-            imgpoints = torch.cat([img[xyz[..., 0], xyz[..., 1], xyz[..., 2], None] for img in images], dim=-1).reshape(-1, 4)  # [H*W*D, 4]
+            imgpoints = torch.cat([img[xyz[..., 0], xyz[..., 1], xyz[..., 2], None] for img in images], dim=-1).reshape(-1, len(images))  # [H*W*D, 4]
             ### Check if meshgrid and full sampling are the same
             # imgpoint2 = torch.cat([img[..., None] for img in images], dim=-1).reshape(-1, 4)
             # print('avg', torch.abs(imgpoint2 - imgpoints).mean())
@@ -172,32 +176,32 @@ class BRATS2021EncoderSegDataset(Dataset):
 
 if __name__ == '__main__':
     ### Check for encoded dataset
-    dataset = BRATS2021EncoderSegDataset('/data/Implicit3DCNNTasks/brats2021', '/data/BRATS2021/training/')
-    print(len(dataset))
-    for idx in np.random.randint(len(dataset)//8, size=(20,)):
-        datum = dataset[idx]
-        enc, seg = dataset.both_files[idx]
-        print(enc, seg)
-        for k, v in datum.items():
-            if(k == 'weights'):
-                print(k, v)
-                continue
-            if type(v) == torch.Tensor:
-                print(k, v.shape, v.dtype, v.device, v.min(), v.max())
-            else:
-                print(k, v)
-        print()
-        # print(idx, enc, seg)
-        # print(idx, dataset[idx])
+    # dataset = BRATS2021EncoderSegDataset('/data/Implicit3DCNNTasks/brats2021', '/data/BRATS2021/training/')
+    # print(len(dataset))
+    # for idx in np.random.randint(len(dataset)//8, size=(20,)):
+    #     datum = dataset[idx]
+    #     enc, seg = dataset.both_files[idx]
+    #     print(enc, seg)
+    #     for k, v in datum.items():
+    #         if(k == 'weights'):
+    #             print(k, v)
+    #             continue
+    #         if type(v) == torch.Tensor:
+    #             print(k, v.shape, v.dtype, v.device, v.min(), v.max())
+    #         else:
+    #             print(k, v)
+    #     print()
+    #     # print(idx, enc, seg)
+    #     # print(idx, dataset[idx])
 
     ### Check for BRATS 2021 dataset
-    # dataset = BRATS2021Dataset('/data/BRATS2021/training/', sample='full')
-    # print(len(dataset))
-    # ds = dataset[0]
-    # for k, v in ds.items():
-    #     if type(v) == torch.Tensor:
-    #         print(k, v.shape, v.dtype, v.device, v.min(), v.max())
-    #     else:
-    #         print(k, v)
-    # norm = ds['xyz']/(ds['dims'][None]-1)*2 - 1
-    # print(norm, norm.dtype)
+    dataset = BRATS2021Dataset('/data/BRATS2021/training/', sample='random', multimodal=False, mlabel=2)
+    print(len(dataset))
+    ds = dataset[0]
+    for k, v in ds.items():
+        if type(v) == torch.Tensor:
+            print(k, v.shape, v.dtype, v.device, v.min(), v.max())
+        else:
+            print(k, v)
+    norm = ds['xyz']/(ds['dims'][None]-1)*2 - 1
+    print(norm, norm.dtype)

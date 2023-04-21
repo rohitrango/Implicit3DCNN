@@ -23,6 +23,19 @@ dataset = _C.DATASET = CN()  # dataset config
 dataset.TRAIN_ENCODED_DIR = '/data/Implicit3DCNNTasks/brats2021/'
 dataset.TRAIN_SEG_DIR = '/data/BRATS2021/training/'
 
+## encoder parameters
+enc = _C.ENCODE = CN()
+enc.MULTIMODAL = True
+enc.MLABEL = 0   # can be 0, 1, 2, 3
+enc.NUM_EPOCHS_STAGE1 = 20
+enc.NUM_EPOCHS_STAGE2 = 500
+enc.STAGE1_TRAIN_IMAGES = 250
+enc.NUM_POINTS = 100000
+enc.SCORE_FN = "uniform"   # normalize using z-score or uniform
+# encoder parameters
+enc.LEVEL_DIM = 4
+enc.DESIRED_RESOLUTION = 196
+
 net = _C.NETWORK = CN()
 
 def get_cfg_defaults():
