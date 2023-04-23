@@ -48,7 +48,7 @@ class AbstractGeneralResNet(nn.Module):
         super().__init__()
         resblocks = []
         for out_channels, n_layers in zip(blocks, num_layers_per_block):
-            resblocks.append(Resblock(input_channels, out_channels, resolutions, offsets, n_layers, context=context))
+            resblocks.append(Resblock(input_channels, out_channels, resolutions, offsets, n_layers, activation=activation, context=context))
             resblocks.append(activation)
             input_channels = out_channels
         # add a final MLP layer to make channel size to if does not exist (because GridEncoder doesnt support higher grid sizes)
@@ -57,7 +57,7 @@ class AbstractGeneralResNet(nn.Module):
             resblocks.append(activation)
             input_channels = 8
 
-        self.resblocks = nn.ModuleList(self.resblocks)
+        self.resblocks = nn.ModuleList(resblocks)
         # TODO: Make decoder parameters more flexible
         self.decoder = HashRouterLayer(resolutions, offsets, num_levels=16, log_hashmap_size=19,
                                     embed_channels=input_channels, mlp_channels=[], out_channels=output_channels)

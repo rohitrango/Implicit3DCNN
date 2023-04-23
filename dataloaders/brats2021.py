@@ -176,7 +176,10 @@ class BRATS2021EncoderSegDataset(Dataset):
 
 if __name__ == '__main__':
     ### Check for encoded dataset
-    # dataset = BRATS2021EncoderSegDataset('/data/Implicit3DCNNTasks/brats2021', '/data/BRATS2021/training/')
+    dataset = BRATS2021EncoderSegDataset('/data/Implicit3DCNNTasks/brats2021_unimodal', '/data/BRATS2021/training/', val_fold=1)
+    for i in range(5):
+        enc, seg = dataset.both_files[i]
+        print(enc, seg)
     # print(len(dataset))
     # for idx in np.random.randint(len(dataset)//8, size=(20,)):
     #     datum = dataset[idx]
@@ -195,13 +198,13 @@ if __name__ == '__main__':
     #     # print(idx, dataset[idx])
 
     ### Check for BRATS 2021 dataset
-    dataset = BRATS2021Dataset('/data/BRATS2021/training/', sample='random', multimodal=False, mlabel=2)
-    print(len(dataset))
-    ds = dataset[0]
-    for k, v in ds.items():
-        if type(v) == torch.Tensor:
-            print(k, v.shape, v.dtype, v.device, v.min(), v.max())
-        else:
-            print(k, v)
-    norm = ds['xyz']/(ds['dims'][None]-1)*2 - 1
-    print(norm, norm.dtype)
+    # dataset = BRATS2021Dataset('/data/BRATS2021/training/', sample='random', multimodal=False, mlabel=2)
+    # print(len(dataset))
+    # ds = dataset[0]
+    # for k, v in ds.items():
+    #     if type(v) == torch.Tensor:
+    #         print(k, v.shape, v.dtype, v.device, v.min(), v.max())
+    #     else:
+    #         print(k, v)
+    # norm = ds['xyz']/(ds['dims'][None]-1)*2 - 1
+    # print(norm, norm.dtype)

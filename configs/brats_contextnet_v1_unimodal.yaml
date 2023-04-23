@@ -1,0 +1,17 @@
+## Apr 23
+## Config for small contextresnet with unimodal path
+TRAIN:
+  EPOCHS: 100
+  BASE_LR: 2e-4
+  BATCH_SIZE: 2
+VAL:
+  FOLD: 1
+DATASET:
+  TRAIN_ENCODED_DIR: /data/Implicit3DCNNTasks/brats2021_unimodal
+NETWORK:
+  NAME: AbstractContextResNet
+  BLOCK_CHANNELS: [8, 8, 8, 8]
+  BLOCK_NUM_LAYERS: [2, 2, 2, 2]
+  INPUT_CHANNELS: 8
+SEG:
+  WEIGHT_CE: 0.0

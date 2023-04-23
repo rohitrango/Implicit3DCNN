@@ -109,6 +109,10 @@ if __name__ == '__main__':
         print(f"Experiment {args.exp_name} already exists. Please delete it first.")
         exit(1)
     os.makedirs('experiments/' + args.exp_name)
+    # save the config
+    with open(osp.join('experiments/', args.exp_name, 'config.yaml'), 'w') as f:
+        f.write(cfg.dump())
+
     writer = tensorboardX.SummaryWriter(log_dir='experiments/' + args.exp_name)
 
     # set up datasets
@@ -130,11 +134,10 @@ if __name__ == '__main__':
     lr_scheduler = get_scheduler(cfg, optim)
 
     # extra loss config here
-    use_ce_loss = cfg.SEG.WEIGHT_CE <= 0
+    use_ce_loss = cfg.SEG.WEIGHT_CE > 0
 
     # keep track of best metrics
     best_metrics = dict()
-
     # Eval in the beginning once
     eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=None, writer=writer, stop_at=400)
     # train
