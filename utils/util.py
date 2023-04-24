@@ -45,7 +45,7 @@ def init_network(cfg, offsets, resolutions):
 
 def get_optimizer(cfg, net):
     # TODO: Change this
-    optim = torch.optim.Adam(net.parameters(), lr=cfg.TRAIN.BASE_LR)
+    optim = torch.optim.Adam(net.parameters(), lr=cfg.TRAIN.BASE_LR, weight_decay=cfg.TRAIN.WEIGHT_DECAY)
     return optim
 
 def get_scheduler(cfg, optim):

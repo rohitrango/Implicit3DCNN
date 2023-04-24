@@ -58,11 +58,16 @@ def eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=Non
                     gt_wt = (gt_segms == 3)
                     dice_scores[2].append(dice_score_val(pred_wt, gt_wt, num_classes=2, ignore_class=0)[0].item())
                 else:
-                    pred_segms = (torch.sigmoid(pred_segms)>0.5).float()
+                    # print(pred_segms.shape, gt_segms.shape)
+                    pred_segms = (torch.sigmoid(pred_segms)>=0.5).float()
                     gts_brats = format_raw_gt_to_brats(gt_segms)
-                    dice_scores[2].append(dice_score_binary(pred_segms[..., 1], gts_brats[0]).item())  # ET
-                    dice_scores[1].append(dice_score_binary(pred_segms[..., 2], gts_brats[1]).item())  # TC
-                    dice_scores[0].append(dice_score_binary(pred_segms[..., 3], gts_brats[2]).item())  # WT
+                    for i in range(3):
+                        _d = dice_score_binary(pred_segms[..., i+1], gts_brats[i]).item()
+                        # print(i, _d)
+                        dice_scores[2-i].append(_d)
+                    # dice_scores[2].append(dice_score_binary(pred_segms[..., 1], gts_brats[0]).item())  # ET
+                    # dice_scores[1].append(dice_score_binary(pred_segms[..., 2], gts_brats[1]).item())  # TC
+                    # dice_scores[0].append(dice_score_binary(pred_segms[..., 3], gts_brats[2]).item())  # WT
                 # reset
                 pred_segms = []
                 gt_segms = []
@@ -144,46 +149,49 @@ if __name__ == '__main__':
     for epoch in range(cfg.TRAIN.EPOCHS):
         # perm = tqdm(np.random.permutation(len(train_dataset)))
         perm = tqdm(train_dataloader)
-        for i, datum in enumerate(perm):
-            optim.zero_grad()
-            # get data
-            # datum = train_dataset[idx]
-            embed = datum['embeddings'].cuda() # [B, N, 1, C]
-            embed = embed.squeeze(2).permute(1, 0, 2).contiguous()  # [N, B, C]
-            # coords = [B, N, 3], dims = [B, 3]
-            coords = datum['xyz'].cuda() / (datum['dims'][:, None].cuda() - 1) * 2 - 1
-            coords = coords.permute(1, 0, 2).contiguous()  # [N, B, 3]
-            # coords = coords[:, None]
-            gt_segm = datum['segm'].cuda()   # [B, N]
-            # weights = datum['weights'].cuda().mean(0)  # [B, C] -> [C]
-            # forward
-            logits = network(embed, coords)  # [N, B, out]
-            logits = logits.permute(1, 0, 2) # [B, N, out]
-            # check for what mode are we training in
-            ce_loss = torch.tensor(0, device=logits.device)
-            if cfg.TRAIN.BRATS_SEGM_MODE == 'raw':
-                # check if we should use CE loss
-                if use_ce_loss:
-                    ce_loss = F.cross_entropy(logits.permute(0, 2, 1), gt_segm.long()) 
-                dice_loss = dice_loss_with_logits_batched(logits, gt_segm, cfg.TRAIN.LOGIT_TRANSFORM, ignore_idx=0)
-            else:
-                gt_segm_bratsformat = format_raw_gt_to_brats(gt_segm)
-                # check if we should use CE loss
-                if use_ce_loss:
-                    ce_losses = [F.binary_cross_entropy_with_logits(logits[..., i+1], gt_segm_bratsformat[i]) for i in range(3)]
-                    ce_loss = 0
-                    for ce in ce_losses:
-                        ce_loss += ce
-                    ce_loss /= 3
-                dice_loss = dice_loss_with_logits_batched(logits, gt_segm_bratsformat, 'sigmoid', ignore_idx=0)
+        try:
+            for i, datum in enumerate(perm):
+                optim.zero_grad()
+                # get data
+                # datum = train_dataset[idx]
+                embed = datum['embeddings'].cuda() # [B, N, 1, C]
+                embed = embed.squeeze(2).permute(1, 0, 2).contiguous()  # [N, B, C]
+                # coords = [B, N, 3], dims = [B, 3]
+                coords = datum['xyz'].cuda() / (datum['dims'][:, None].cuda() - 1) * 2 - 1
+                coords = coords.permute(1, 0, 2).contiguous()  # [N, B, 3]
+                # coords = coords[:, None]
+                gt_segm = datum['segm'].cuda()   # [B, N]
+                # weights = datum['weights'].cuda().mean(0)  # [B, C] -> [C]
+                # forward
+                logits = network(embed, coords)  # [N, B, out]
+                logits = logits.permute(1, 0, 2) # [B, N, out]
+                # check for what mode are we training in
+                ce_loss = torch.tensor(0, device=logits.device)
+                if cfg.TRAIN.BRATS_SEGM_MODE == 'raw':
+                    # check if we should use CE loss
+                    if use_ce_loss:
+                        ce_loss = F.cross_entropy(logits.permute(0, 2, 1), gt_segm.long()) 
+                    dice_loss = dice_loss_with_logits_batched(logits, gt_segm, cfg.TRAIN.LOGIT_TRANSFORM, ignore_idx=0)
+                else:
+                    gt_segm_bratsformat = format_raw_gt_to_brats(gt_segm)
+                    # check if we should use CE loss
+                    if use_ce_loss:
+                        ce_losses = [F.binary_cross_entropy_with_logits(logits[..., i+1], gt_segm_bratsformat[i]) for i in range(3)]
+                        ce_loss = 0
+                        for ce in ce_losses:
+                            ce_loss += ce
+                        ce_loss /= 3
+                    dice_loss = dice_loss_with_logits_batched(logits, gt_segm_bratsformat, 'sigmoid', ignore_idx=0)
 
-            loss = cfg.SEG.WEIGHT_DICE * dice_loss + cfg.SEG.WEIGHT_CE * ce_loss
-            loss.backward()
-            optim.step()
-            perm.set_description(f'Epoch:{epoch} Loss:{loss.item():.4f} CE:{ce_loss.item():.4f} Dice:{dice_loss.item():.4f}')
-            writer.add_scalar('train/loss', loss.item(), epoch*len(train_dataloader)+i)
-            writer.add_scalar('train/ce_loss', ce_loss.item(), epoch*len(train_dataloader)+i)
-            writer.add_scalar('train/dice_loss', dice_loss.item(), epoch*len(train_dataloader)+i)
+                loss = cfg.SEG.WEIGHT_DICE * dice_loss + cfg.SEG.WEIGHT_CE * ce_loss
+                loss.backward()
+                optim.step()
+                perm.set_description(f'Epoch:{epoch} Loss:{loss.item():.4f} CE:{ce_loss.item():.4f} Dice:{dice_loss.item():.4f}')
+                writer.add_scalar('train/loss', loss.item(), epoch*len(train_dataloader)+i)
+                writer.add_scalar('train/ce_loss', ce_loss.item(), epoch*len(train_dataloader)+i)
+                writer.add_scalar('train/dice_loss', dice_loss.item(), epoch*len(train_dataloader)+i)
+        except KeyboardInterrupt:
+            print(f"Skipping rest of training for epoch {epoch}.")
         lr_scheduler.step()
         # val and save 
         if (epoch+1) % cfg.VAL.EVAL_EVERY == 0 or epoch == cfg.TRAIN.EPOCHS-1:

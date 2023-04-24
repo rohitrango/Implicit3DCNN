@@ -62,6 +62,6 @@ def dice_score_val(pred, gt, num_classes=4, ignore_class=0):
     return ret
 
 def dice_score_binary(pred, gt):
-    num = (2 * pred * gt).mean()
+    num = (2.0 * pred * gt).mean()
     den = (pred + gt + 1e-5).mean()
     return num/den
