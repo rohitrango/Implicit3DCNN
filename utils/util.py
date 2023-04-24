@@ -40,6 +40,7 @@ def init_network(cfg, offsets, resolutions):
                          activation=actv)
     else:
         raise ValueError(f"Unknown network type: {name}")
+    print(net)
     return net
 
 def get_optimizer(cfg, net):
