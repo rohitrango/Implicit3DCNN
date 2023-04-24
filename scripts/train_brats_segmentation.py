@@ -18,11 +18,6 @@ import os
 from torch.utils.data import DataLoader
 from os import path as osp
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--exp_name', type=str, required=True, help='Name of experiment')
-parser.add_argument('--cfg_file', type=str, default='configs/brats_basic_seg.yaml', help='Path to config file')
-parser.add_argument('opts', default=None, nargs=argparse.REMAINDER)
-
 @torch.no_grad()
 def eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=None, writer=None, stop_at=None):
     '''
@@ -76,7 +71,8 @@ def eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=Non
         for i, name in enumerate(names):
             print("Dice {} mean={:04f}, std={:04f}".format(name, np.mean(dice_scores[i]), np.std(dice_scores[i])))
             valepoch = -1 if epoch is None else epoch
-            writer.add_scalar(f'val/dice_mean_{name}', np.mean(dice_scores[i]), valepoch)
+            if writer is not None:
+                writer.add_scalar(f'val/dice_mean_{name}', np.mean(dice_scores[i]), valepoch)
 
         # Check if these are the best metrics
         if epoch is not None:
@@ -86,7 +82,7 @@ def eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=Non
                 for i, n in enumerate(names):
                     best_metrics[n] = np.mean(dice_scores[i])
                 # save model
-                torch.save({'network': network.state_dict(),  'metrics': best_metrics}, osp.join(cfg.EXP_NAME + "_best_model.pth"))
+                torch.save({'network': network.state_dict(),  'metrics': best_metrics}, osp.join(cfg.EXP_NAME, "best_model.pth"))
                 print("Saved best model.\n")
 
     # check for a keyboard interrupt to skip
@@ -95,8 +91,12 @@ def eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=Non
     
     return best_metrics
     
-
 if __name__ == '__main__':
+    # Load parser
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--exp_name', type=str, required=True, help='Name of experiment')
+    parser.add_argument('--cfg_file', type=str, default='configs/brats_basic_seg.yaml', help='Path to config file')
+    parser.add_argument('opts', default=None, nargs=argparse.REMAINDER)
     # parse args and get config
     args = parser.parse_args()
     cfg = get_cfg_defaults()
@@ -139,7 +139,7 @@ if __name__ == '__main__':
     # keep track of best metrics
     best_metrics = dict()
     # Eval in the beginning once
-    eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=None, writer=writer, stop_at=400)
+    # eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=None, writer=writer, stop_at=400)
     # train
     for epoch in range(cfg.TRAIN.EPOCHS):
         # perm = tqdm(np.random.permutation(len(train_dataset)))
@@ -186,4 +186,5 @@ if __name__ == '__main__':
             writer.add_scalar('train/dice_loss', dice_loss.item(), epoch*len(train_dataloader)+i)
         lr_scheduler.step()
         # val and save 
-        best_metrics = eval_validation_data(cfg, network, val_dataset, best_metrics, epoch, writer=writer, stop_at=400)
+        if (epoch+1) % cfg.VAL.EVAL_EVERY == 0 or epoch == cfg.TRAIN.EPOCHS-1:
+            best_metrics = eval_validation_data(cfg, network, val_dataset, best_metrics, epoch, writer=writer, stop_at=cfg.VAL.STOP_AT)

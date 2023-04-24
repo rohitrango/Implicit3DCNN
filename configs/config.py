@@ -19,6 +19,8 @@ train.LOGIT_TRANSFORM = 'sigmoid'
 
 val = _C.VAL = CN()  # validation config
 val.FOLD = 0        
+val.EVAL_EVERY = 1
+val.STOP_AT = 400
 
 dataset = _C.DATASET = CN()  # dataset config
 dataset.TRAIN_ENCODED_DIR = '/data/Implicit3DCNNTasks/brats2021/'
