@@ -198,8 +198,9 @@ if __name__ == '__main__':
     embed.requires_grad = True
     output = abstractContextFunction(embed, offsets, resolutions, 16, 2**L)
     print(f"Time for context: {time.time() - a}")
+    loss = (output**2).mean()
     a = time.time()
-    (output**2).mean().backward()
+    loss.backward()
     print(f"Time for context backward: {time.time() - a}")
     print("done.")
     # #print(output)
@@ -216,8 +217,9 @@ if __name__ == '__main__':
     print(output.shape)
     # print(output.min(), output.max(), output.shape)
 
+    loss = (output**2).mean()
     a = time.time()
-    (output**2).mean().backward()
+    loss.backward()
     print(f"Time for backward: {time.time() - a}")
     input()
 
