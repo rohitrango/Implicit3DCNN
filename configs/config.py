@@ -17,6 +17,7 @@ train.NUM_WORKERS = 4
 train.BRATS_SEGM_MODE = 'brats'   # choices are 'raw' for the format mentioned in the dataset, 'brats' for the format used in the brats challenge
 train.LOGIT_TRANSFORM = 'sigmoid'
 train.WEIGHT_DECAY = 0.0
+train.OPTIMIZER = 'adam'
 
 val = _C.VAL = CN()  # validation config
 val.FOLD = 0        

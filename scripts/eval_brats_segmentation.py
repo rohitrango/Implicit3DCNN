@@ -46,4 +46,4 @@ if __name__ == '__main__':
     network.load_state_dict(torch.load(osp.join(exp_path, 'best_model.pth'))['network'], strict=True)
 
     metrics = dict()
-    eval_validation_data(cfg, network, val_dataset, best_metrics=metrics, epoch=None, writer=None, stop_at=None)
+    eval_validation_data(cfg, network, None, val_dataset, best_metrics=metrics, epoch=None, writer=None, stop_at=None)

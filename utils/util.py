@@ -45,10 +45,15 @@ def init_network(cfg, offsets, resolutions):
 
 def get_optimizer(cfg, net):
     # TODO: Change this
-    optim = torch.optim.Adam(net.parameters(), lr=cfg.TRAIN.BASE_LR, weight_decay=cfg.TRAIN.WEIGHT_DECAY)
+    if cfg.TRAIN.OPTIMIZER == 'adam':
+        optim = torch.optim.Adam(net.parameters(), lr=cfg.TRAIN.BASE_LR, weight_decay=cfg.TRAIN.WEIGHT_DECAY)
+    elif cfg.TRAIN.OPTIMIZER == 'sgd':
+        optim = torch.optim.SGD(net.parameters(), lr=cfg.TRAIN.BASE_LR, weight_decay=cfg.TRAIN.WEIGHT_DECAY, momentum=0.9)
+    else:
+        raise ValueError(f"Unknown optimizer: {cfg.TRAIN.OPTIMIZER}")
     return optim
 
-def get_scheduler(cfg, optim):
+def get_scheduler(cfg, optim, start_epoch=0):
     # TODO: Change this
     sch = torch.optim.lr_scheduler.PolynomialLR(optim, total_iters=cfg.TRAIN.EPOCHS, power=0.9)
     return sch

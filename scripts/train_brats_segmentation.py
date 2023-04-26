@@ -8,7 +8,7 @@ import argparse
 from dataloaders import BRATS2021EncoderSegDataset
 from utils import init_network, get_optimizer, get_scheduler
 from gridencoder import GridEncoder
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import numpy as np
 from torch.nn import functional as F
 from utils.losses import dice_loss_with_logits, dice_score_val, dice_loss_with_logits_batched, dice_score_binary
@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from os import path as osp
 
 @torch.no_grad()
-def eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=None, writer=None, stop_at=None):
+def eval_validation_data(cfg, network, optim, val_dataset, best_metrics=None, epoch=None, writer=None, stop_at=None):
     '''
     Check for validation performance here
     '''
@@ -87,7 +87,11 @@ def eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=Non
                 for i, n in enumerate(names):
                     best_metrics[n] = np.mean(dice_scores[i])
                 # save model
-                torch.save({'network': network.state_dict(),  'metrics': best_metrics}, osp.join(cfg.EXP_NAME, "best_model.pth"))
+                torch.save({'epoch': epoch,
+                            'network': network.state_dict(),  
+                            'optim': optim.state_dict(),
+                            'metrics': best_metrics
+                            }, osp.join(cfg.EXP_NAME, "best_model.pth"))
                 print("Saved best model.\n")
 
     # check for a keyboard interrupt to skip
@@ -101,22 +105,36 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--exp_name', type=str, required=True, help='Name of experiment')
     parser.add_argument('--cfg_file', type=str, default='configs/brats_basic_seg.yaml', help='Path to config file')
+    parser.add_argument('--resume', action='store_true', help='Resume training from last checkpoint')
     parser.add_argument('opts', default=None, nargs=argparse.REMAINDER)
     # parse args and get config
     args = parser.parse_args()
     cfg = get_cfg_defaults()
-    cfg.merge_from_file(args.cfg_file)
-    cfg.merge_from_list(args.opts)
-    print(cfg)
-    cfg.EXP_NAME = osp.join('experiments/', args.exp_name)
 
-    if os.path.exists('experiments/' + args.exp_name):
-        print(f"Experiment {args.exp_name} already exists. Please delete it first.")
-        exit(1)
-    os.makedirs('experiments/' + args.exp_name)
-    # save the config
-    with open(osp.join('experiments/', args.exp_name, 'config.yaml'), 'w') as f:
-        f.write(cfg.dump())
+    if args.resume:
+        # Just take the config from the experiment folder
+        exp_dir = osp.join('experiments/', args.exp_name)
+        args.cfg_file = osp.join(exp_dir, 'config.yaml')
+        cfg.merge_from_file(args.cfg_file)
+        cfg.merge_from_list(args.opts)
+        print(cfg)
+        cfg.EXP_NAME = exp_dir
+        print("Resuming from checkpoint...")
+
+    else:
+        # Create a new experiment folder
+        cfg.merge_from_file(args.cfg_file)
+        cfg.merge_from_list(args.opts)
+        print(cfg)
+        cfg.EXP_NAME = osp.join('experiments/', args.exp_name)
+        if os.path.exists('experiments/' + args.exp_name):
+            print(f"Experiment {args.exp_name} already exists. Please delete it first.")
+            exit(1)
+        os.makedirs('experiments/' + args.exp_name)
+        # save the config
+        with open(osp.join('experiments/', args.exp_name, 'config.yaml'), 'w') as f:
+            f.write(cfg.dump())
+        print("Starting new experiment...")
 
     writer = tensorboardX.SummaryWriter(log_dir='experiments/' + args.exp_name)
 
@@ -136,19 +154,31 @@ if __name__ == '__main__':
     # init network and stuff
     network = init_network(cfg, offsets, resolutions).cuda()
     optim = get_optimizer(cfg, network)
-    lr_scheduler = get_scheduler(cfg, optim)
 
-    # extra loss config here
-    use_ce_loss = cfg.SEG.WEIGHT_CE > 0
-
+    # load checkpoint if needed
+    start_epoch = 0
     # keep track of best metrics
     best_metrics = dict()
+    if args.resume:
+        saved = torch.load(osp.join(cfg.EXP_NAME, 'best_model.pth'))
+        network.load_state_dict(saved['network'])
+        optim.load_state_dict(saved['optim'])
+        start_epoch = saved['epoch'] + 1
+        best_metrics = saved['metrics']
+        print(f"Resuming from epoch {start_epoch}.")
+    
+    # Load scheduler
+    lr_scheduler = get_scheduler(cfg, optim, start_epoch)
+    
+    # extra loss config here
+    use_ce_loss = cfg.SEG.WEIGHT_CE > 0
     # Eval in the beginning once
     # eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=None, writer=writer, stop_at=400)
     # train
-    for epoch in range(cfg.TRAIN.EPOCHS):
+    for epoch in range(start_epoch, cfg.TRAIN.EPOCHS):
         # perm = tqdm(np.random.permutation(len(train_dataset)))
         perm = tqdm(train_dataloader)
+        lr = lr_scheduler.get_last_lr()[0]
         try:
             for i, datum in enumerate(perm):
                 optim.zero_grad()
@@ -186,7 +216,7 @@ if __name__ == '__main__':
                 loss = cfg.SEG.WEIGHT_DICE * dice_loss + cfg.SEG.WEIGHT_CE * ce_loss
                 loss.backward()
                 optim.step()
-                perm.set_description(f'Epoch:{epoch} Loss:{loss.item():.4f} CE:{ce_loss.item():.4f} Dice:{dice_loss.item():.4f}')
+                perm.set_description(f'Epoch:{epoch} lr: {lr:.4f} Loss:{loss.item():.4f} CE:{ce_loss.item():.4f} Dice:{dice_loss.item():.4f}')
                 writer.add_scalar('train/loss', loss.item(), epoch*len(train_dataloader)+i)
                 writer.add_scalar('train/ce_loss', ce_loss.item(), epoch*len(train_dataloader)+i)
                 writer.add_scalar('train/dice_loss', dice_loss.item(), epoch*len(train_dataloader)+i)
@@ -195,4 +225,4 @@ if __name__ == '__main__':
         lr_scheduler.step()
         # val and save 
         if (epoch+1) % cfg.VAL.EVAL_EVERY == 0 or epoch == cfg.TRAIN.EPOCHS-1:
-            best_metrics = eval_validation_data(cfg, network, val_dataset, best_metrics, epoch, writer=writer, stop_at=cfg.VAL.STOP_AT)
+            best_metrics = eval_validation_data(cfg, network, optim, val_dataset, best_metrics, epoch, writer=writer, stop_at=cfg.VAL.STOP_AT)
