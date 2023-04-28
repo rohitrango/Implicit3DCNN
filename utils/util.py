@@ -9,6 +9,13 @@ def z_score_normalize(image):
 def uniform_normalize(image):
     return (image - image.min()) / (image.max() - image.min()) * 2 - 1
 
+class Sine(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+    
+    def forward(self, x):
+        return torch.sin(x)
+
 def get_activation_fn(cfg):
     # given network activation, get the apt activation function
     name = cfg.ACTIVATION
@@ -16,6 +23,8 @@ def get_activation_fn(cfg):
         return nn.LeakyReLU(cfg.ACTIVATION_PARAM)
     elif name == 'ReLU':
         return nn.ReLU()
+    elif name == 'Sine':
+        return Sine()
     else:
         raise ValueError(f"Unknown activation function: {name}")
 
