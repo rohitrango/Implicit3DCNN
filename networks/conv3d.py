@@ -190,7 +190,6 @@ if __name__ == '__main__':
     #     optim.step()
     #     print(loss.item())
 
-    layer = AbstractConv3D(2, 4, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
     # layer2 = AbstractConv3D(8, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
 
     from networks.contextlayer import abstractContextFunction
@@ -207,13 +206,16 @@ if __name__ == '__main__':
     # # print(output.min(), output.max(), output.shape, embed.min(), embed.max(), embed.shape)
     # #input()
 
+    layer = AbstractConv3D(2, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
+
     # # compute time
     # embed = embed.expand(-1, 32, -1).contiguous()
     a = time.time()
     embed = embed.expand(-1, 4, -1).contiguous().detach()
     embed.requires_grad = True
     output = layer(embed)
-    print(f"Time for conv3d: {time.time() - a}")
+    b = time.time()
+    print(f"Time for conv3d: {b - a}")
     print(output.shape)
     # print(output.min(), output.max(), output.shape)
 
