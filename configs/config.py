@@ -25,8 +25,8 @@ val.EVAL_EVERY = 1
 val.STOP_AT = 400
 
 dataset = _C.DATASET = CN()  # dataset config
-dataset.TRAIN_ENCODED_DIR = '/data/Implicit3DCNNTasks/brats2021/'
-dataset.TRAIN_SEG_DIR = '/data/BRATS2021/training/'
+dataset.TRAIN_ENCODED_DIR = '/data/rohitrango/Implicit3DCNNTasks/brats2021/'
+dataset.TRAIN_SEG_DIR = '/data/rohitrango/BRATS2021/training/'
 
 ## encoder parameters
 enc = _C.ENCODE = CN()

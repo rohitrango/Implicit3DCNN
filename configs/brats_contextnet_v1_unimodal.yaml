@@ -7,7 +7,7 @@ TRAIN:
 VAL:
   FOLD: 1
 DATASET:
-  TRAIN_ENCODED_DIR: /data/Implicit3DCNNTasks/brats2021_unimodal
+  TRAIN_ENCODED_DIR: /data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal
 NETWORK:
   NAME: AbstractContextResNet
   BLOCK_CHANNELS: [8, 8, 8, 8]
