@@ -160,12 +160,17 @@ if __name__ == '__main__':
     # keep track of best metrics
     best_metrics = dict()
     if args.resume:
-        saved = torch.load(osp.join(cfg.EXP_NAME, 'best_model.pth'))
-        network.load_state_dict(saved['network'])
-        optim.load_state_dict(saved['optim'])
-        start_epoch = saved['epoch'] + 1
-        best_metrics = saved['metrics']
-        print(f"Resuming from epoch {start_epoch}.")
+        try:
+            saved = torch.load(osp.join(cfg.EXP_NAME, 'best_model.pth'))
+            network.load_state_dict(saved['network'])
+            optim.load_state_dict(saved['optim'])
+            start_epoch = saved['epoch'] + 1
+            best_metrics = saved['metrics']
+            print(f"Resuming from epoch {start_epoch}.")
+        except:
+            start_epoch = 0
+            best_metrics = dict()
+            print(f"Didn't find checkpoint, starting from epoch 0")
     
     # Load scheduler
     lr_scheduler = get_scheduler(cfg, optim, start_epoch)
