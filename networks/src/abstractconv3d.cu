@@ -211,53 +211,76 @@ __global__ void abstract_conv3d_backward_input_kernel(
     int kernel_volume = K1*K2*K3;
     int iosize = input_channels*output_channels;
 
+    // pull this into shared memory
+    __shared__ int resolutions_shared[32];
+    __shared__ int offsets_shared[32];
+    if(threadIdx.x < num_levels) {
+        resolutions_shared[threadIdx.x] = resolutions[threadIdx.x];
+    }
+    if(threadIdx.x < num_levels+1) {
+        offsets_shared[threadIdx.x] = offsets[threadIdx.x];
+    }
+    __syncthreads();
+
     CUDA_KERNEL_LOOP(index, num) {
         // get n, batch index, and output channel index
-        int c_in = index % input_channels;
-        int b_idx = (index / input_channels) % batch_size;
-        int n_idx = (index / input_channels) / batch_size;
+        int c_in = modpow2(index, input_channels);    // assume channels are powers of 2
+        int ibyin = index / input_channels;
+        int b_idx = ibyin % batch_size;
+        int n_idx = ibyin / batch_size;
         // get level information
-        int level = get_level(offsets, n_idx, num_levels);
-        int offset_lvl = offsets[level];
+        int level = get_level(offsets_shared, n_idx, num_levels);
+        int offset_lvl = offsets_shared[level];
         int local_n = n_idx - offset_lvl;
-        int lvl_res = resolutions[level];
+        int lvl_res = resolutions_shared[level];
         int lvl_res3 = lvl_res*lvl_res*lvl_res;
         // if this is a tail end, skip t
         if(local_n >= lvl_res3)
             continue;
         // now we have n, b, c_in --> time to get x'[n, b, cin]
         scalar_t res = 0;
-        for(int kernel_idx=0; kernel_idx < kernel_volume; kernel_idx++) {
-            // get kernel offset
-            int k1 = (kernel_idx/(K2*K3)) - K1/2;
-            int k2 = ((kernel_idx % (K2*K3))/K3) - K2/2;
-            int k3 = (kernel_idx%K3) - K3/2;
-            // get start weight index (only add (c_in, c_out))
-            const scalar_t *weight_start = weights + level*kernel_volume*iosize + kernel_idx*iosize;
-            // get neighboring index
-            int y_index;
-            int coord[3];
-            unravel_index(local_n, lvl_res, coord);
-            if(lvl_res3 > hashmap_size) {   // this is a big resolution, simply compute the (x + dx) % T
-                y_index = (local_n + compute_diff_hash(-k1, -k2, -k3, lvl_res, hashmap_size)) % hashmap_size + offset_lvl;
-            }
-            else {  // only one point corresponds to this n, find it
-                coord[0] -= k1; coord[1] -= k2; coord[2] -= k3;
-                if(out_of_bounds(coord, lvl_res))
-                    y_index = -1;
-                else
-                    y_index = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;
-            }
-            // compute if x_index != -1
-            if(y_index == -1)
-                continue;
-            // loop in for all the x's
-            int grad_out_idx = y_index*(batch_size*output_channels) + b_idx*input_channels;
-            for(int c=0; c<output_channels; c++) {
-                res += weight_start[c_in*output_channels + c] * grad_output[grad_out_idx + c];
+        int weight_index = level*kernel_volume*iosize;
+        int startcoord[3];
+        unravel_index(local_n, lvl_res, startcoord);
+        // loop over all the weights
+        for(int k1idx=0; k1idx<K1; k1idx++) {
+            int k1 = k1idx - K1/2;
+            for(int k2idx=0; k2idx<K2; k2idx++) {
+                int k2 = k2idx - K2/2;
+                for(int k3idx=0; k3idx<K3; k3idx++) {
+                    // for (k1, k2, k3), get weight
+                    int k3 = k3idx - K3/2;
+                    int y_index;
+                    int coord[3];
+                    #pragma unroll
+                    for(int i=0; i<3; i++)
+                        coord[i] = startcoord[i];
+
+                    if(lvl_res3 > hashmap_size) {   // this is a big resolution, simply compute the (x + dx) % T
+                        y_index = modpow2((local_n + compute_diff_hash(-k1, -k2, -k3, lvl_res, hashmap_size)), hashmap_size) + offset_lvl;
+                    }
+                    else {  // only one point corresponds to this n, find it
+                        coord[0] -= k1; coord[1] -= k2; coord[2] -= k3;
+                        if(out_of_bounds(coord, lvl_res))
+                            y_index = -1;
+                        else
+                            y_index = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;
+                    }
+                    // compute if x_index != -1
+                    if(y_index == -1) {
+                    }
+                    else {
+                        // loop in for all the x's
+                        int grad_out_idx = output_channels*(y_index*batch_size + b_idx);
+                        for(int c=0; c<output_channels; c++) {
+                            res += weights[weight_index + c_in*output_channels + c] * grad_output[grad_out_idx + c];
+                        }                    
+                    }
+                    weight_index += iosize;
+                }
             }
         }
-        grad_input[n_idx*(batch_size*input_channels) + b_idx*input_channels + c_in] = res;
+        grad_input[index] = res;
     }
 }
 
