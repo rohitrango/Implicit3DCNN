@@ -49,7 +49,7 @@ class _abstract_conv3d(Function):
         weight_grad = torch.zeros_like(weight, dtype=weight.dtype, device=weight.device)
         bias_grad   = torch.zeros_like(bias, dtype=bias.dtype, device=bias.device) if bias is not None else None
         ## Manually override gradient computation for testing 
-        # weight_requires_grad = True
+        # weight_requires_grad = False
         # inp_requires_grad = False
         # print(f"input requires_grad : {inp_requires_grad}, weight requires_grad : {weight_requires_grad}")
         # a = time.time()

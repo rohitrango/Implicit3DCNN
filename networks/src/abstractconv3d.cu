@@ -12,6 +12,7 @@ v2: <B, N, K1,K2,K3> blocks, hopefully faster with lot of coalescing
 #include <stdexcept>
 #include <iostream>
 #include <vector>
+#include <cooperative_groups.h>
 
 #include <cuda.h>
 #include <cuda_runtime.h>
