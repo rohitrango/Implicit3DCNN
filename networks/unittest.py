@@ -42,9 +42,13 @@ def forward_pass_check():
     offsets = encoder.offsets
     # print(resolutions)
     # print(offsets)
+    input_channels = 2
+    output_channels = 32
     
     # define layer with zero bias
-    layer = AbstractConv3D(2, 32, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
+    layer = AbstractConv3D(input_channels, output_channels, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
+    # layer.weight.data.zero_()
+    # layer.bias.data.random_()
     print(embed.shape)
     a = time.time()
     output = layer(embed)  # [B, N, out]
@@ -64,7 +68,7 @@ def forward_pass_check():
         if S != r**3:
             break
         # reshape this
-        embed_lvl = embed_lvl.reshape(batch, r, r, r, 2).permute(0, 4, 3, 2, 1).contiguous()  # [1, 2, r, r, r]
+        embed_lvl = embed_lvl.reshape(batch, r, r, r, input_channels).permute(0, 4, 3, 2, 1).contiguous()  # [1, 2, r, r, r]
         conv_lvl = layer.weight[i].permute(4, 3, 0, 1, 2)
         # get conv output
         conv_out = F.conv3d(embed_lvl, conv_lvl, bias=layer.bias[i], stride=1, padding=1).permute(0, 4, 3, 2, 1).contiguous()  # [1, r, r, r, 4]
@@ -199,12 +203,12 @@ def forward_context_check():
 
 
 if __name__ == '__main__':
-    print("Profiler check")
-    profiler_check()
+    # print("Profiler check")
+    # profiler_check()
     print("Forward pass check")
     forward_pass_check()
-    print("\n\n\n")
-    print("Backward pass check")
-    backward_pass_check()
+    # print("\n\n\n")
+    # print("Backward pass check")
+    # backward_pass_check()
     # print("Forward context check.")
     # forward_context_check()
