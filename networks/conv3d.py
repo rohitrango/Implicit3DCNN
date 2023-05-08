@@ -133,8 +133,8 @@ class AbstractConv3D(nn.Module):
             assert len(kernel_size) == 3, "kernel_size should be int or tuple/list of length 3"
         self.kernel_size = kernel_size
         ## list of grid sizes/resolutions, and offsets, should be int32
-        self.register_buffer('resolutions', resolutions.clone().detach().int())
-        self.register_buffer('offsets', offsets.clone().detach().int())
+        self.register_buffer('resolutions', (resolutions+0).clone().detach().int())
+        self.register_buffer('offsets', (offsets+0).clone().detach().int())
         ### load weights now
         fan_in_w = np.sqrt(2 / (np.prod(kernel_size) * channels_in))
         self.register_parameter('weight', nn.Parameter(fan_in_w * torch.randn(num_levels, *kernel_size, channels_in, channels_out)))   # keep channels_in at the end to 
@@ -212,12 +212,13 @@ if __name__ == '__main__':
     # # print(output.min(), output.max(), output.shape, embed.min(), embed.max(), embed.shape)
     # #input()
 
-    layer = AbstractConv3D(2, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
+    layer = AbstractConv3D(16, 16, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
 
     # # compute time
     # embed = embed.expand(-1, 32, -1).contiguous()
     a = time.time()
-    embed = embed.expand(-1, 4, -1).contiguous().detach()
+    # embed = embed.expand(-1, 4, 4).contiguous().detach()
+    embed = embed.repeat(1, 4, 8).contiguous().detach()
     embed.requires_grad = True
     output = layer(embed)
     b = time.time()
@@ -229,7 +230,6 @@ if __name__ == '__main__':
     a = time.time()
     loss.backward()
     print(f"Time for backward: {time.time() - a}")
-    input()
 
     # optim = torch.optim.Adam(list(layer.parameters()) + list(layer2.parameters()), lr=5e-2)
     # pbar = tqdm(range(200))

@@ -99,11 +99,12 @@ def backward_pass_check():
     ## store resolutions and offsets
     resolutions = encoder.resolutions
     offsets = encoder.offsets
-    
+
     # define layer with zero bias
     layer = AbstractConv3D(inp_lvl, out_lvl, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
     out = layer(embed)
     (out**2).sum().backward() 
+
 
     # conv layer
     our_w_grad = layer.weight.grad.data
@@ -198,9 +199,6 @@ def forward_context_check():
         print("grad error: {}, mean grad value: {}".format(meangraddiff, grad_lvl.abs().mean().item()))
         print()
         
-
-
-
 
 if __name__ == '__main__':
     # print("Profiler check")

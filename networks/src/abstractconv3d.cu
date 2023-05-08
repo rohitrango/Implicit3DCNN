@@ -24,6 +24,7 @@ v2: <B, N, K1,K2,K3> blocks, hopefully faster with lot of coalescing
 #define div_up(x, n) ((x)+(n)-1)/(n)
 // assume that x is positive and n is a power of 2
 #define modpow2(x, n) ((x)&(n-1))    
+#define divpow2(x, n) ((x)>>(31 - __clz(n)))
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -227,9 +228,9 @@ __global__ void abstract_conv3d_backward_input_kernel(
     CUDA_KERNEL_LOOP(index, num) {
         // get n, batch index, and output channel index
         int c_in = modpow2(index, input_channels);    // assume channels are powers of 2
-        int ibyin = index / input_channels;
-        int b_idx = ibyin % batch_size;
-        int n_idx = ibyin / batch_size;
+        int ibyin = divpow2(index, input_channels);  
+        int b_idx = modpow2(ibyin, batch_size); 
+        int n_idx = divpow2(ibyin, batch_size);
         // get level information
         int level = get_level(offsets_shared, n_idx, num_levels);
         int offset_lvl = offsets_shared[level];
@@ -270,15 +271,16 @@ __global__ void abstract_conv3d_backward_input_kernel(
                     }
                     // compute if x_index != -1
                     if(y_index == -1) {
+                        weight_index += iosize;
                     }
                     else {
                         // loop in for all the x's
                         int grad_out_idx = output_channels*(y_index*batch_size + b_idx);
                         for(int c=0; c<output_channels; c++) {
-                            res += weights[weight_index + c_in*output_channels + c] * grad_output[grad_out_idx + c];
+                            res += weights[weight_index + c_in] * grad_output[grad_out_idx + c];
+                            weight_index += input_channels;
                         }                    
                     }
-                    weight_index += iosize;
                 }
             }
         }
@@ -618,6 +620,7 @@ void abstract_conv3d_backward_wrapper_v2(
     const int* __restrict__ offsets,
     const int* __restrict__ resolutions,
     const scalar_t* __restrict__ weights,
+    const scalar_t* __restrict__ weights_permute,
     const int* __restrict__ offsets_tmp,
     const int batch_size,
     const int num_embeddings,
@@ -632,7 +635,7 @@ void abstract_conv3d_backward_wrapper_v2(
         // call gradient w.r.t. input
         abstract_conv3d_backward_input_kernel<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
             grad_output, grad_input, 
-            input, offsets, resolutions, weights, 
+            input, offsets, resolutions, weights_permute, 
             batch_size, num_embeddings, input_channels, output_channels,
             K1, K2, K3, num_levels, hashmap_size
         );
@@ -673,30 +676,31 @@ void abstract_conv3d_backward_wrapper(
     const int num_levels,
     const int hashmap_size
 ) {
-    // Check for input
-    if(inp_requires_grad) {
-        const uint32_t blocks = min(div_up(num_embeddings*batch_size*input_channels, THREADS), 1<<30 - 1);
-        // call gradient w.r.t. input
-        abstract_conv3d_backward_input_kernel<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
-            grad_output, grad_input, 
-            input, offsets, resolutions, weights, bias,
-            batch_size, num_embeddings, input_channels, output_channels,
-            K1, K2, K3, num_levels, hashmap_size
-        );
-        gpuErrchk(cudaPeekAtLastError());
-        gpuErrchk(cudaDeviceSynchronize());
-    }
-    if(weight_requires_grad) {
-        int weightblocks = K1*K2*K3*num_levels;
-        abstract_conv3d_backward_weight_kernel<<<weightblocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
-            grad_output, grad_weights, grad_bias,
-            input, offsets, resolutions, weights, bias,
-            batch_size, num_embeddings, input_channels, output_channels,
-            K1, K2, K3, num_levels, hashmap_size
-        );
-        gpuErrchk(cudaPeekAtLastError());
-        gpuErrchk(cudaDeviceSynchronize());
-    }
+    // throw std::runtime_error("Not implemented");
+    // // Check for input
+    // if(inp_requires_grad) {
+    //     const uint32_t blocks = min(div_up(num_embeddings*batch_size*input_channels, THREADS), 1<<30 - 1);
+    //     // call gradient w.r.t. input
+    //     abstract_conv3d_backward_input_kernel<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+    //         grad_output, grad_input, 
+    //         input, offsets, resolutions, weights, bias,
+    //         batch_size, num_embeddings, input_channels, output_channels,
+    //         K1, K2, K3, num_levels, hashmap_size
+    //     );
+    //     gpuErrchk(cudaPeekAtLastError());
+    //     gpuErrchk(cudaDeviceSynchronize());
+    // }
+    // if(weight_requires_grad) {
+    //     int weightblocks = K1*K2*K3*num_levels;
+    //     abstract_conv3d_backward_weight_kernel<<<weightblocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+    //         grad_output, grad_weights, grad_bias,
+    //         input, offsets, resolutions, weights, bias,
+    //         batch_size, num_embeddings, input_channels, output_channels,
+    //         K1, K2, K3, num_levels, hashmap_size
+    //     );
+    //     gpuErrchk(cudaPeekAtLastError());
+    //     gpuErrchk(cudaDeviceSynchronize());
+    // }
 }
 
 torch::Tensor abstract_conv3d_forward(torch::Tensor input, torch::Tensor output, torch::Tensor offsets, torch::Tensor resolutions,
@@ -795,6 +799,7 @@ std::vector<at::optional<torch::Tensor>> abstract_conv3d_backward(torch::Tensor 
     torch::Tensor grad_weight_tmp, offsets_tmp;
     offsets_tmp = offsets.clone();
     int total_tmp_sum = 0;   // number of entries in temp grad table
+    torch::Tensor weight_permute;  // permuted weights for coalescing
 
     if(weight_requires_grad) {
         // compute bias level, and get tmp weight and offsets
@@ -817,12 +822,22 @@ std::vector<at::optional<torch::Tensor>> abstract_conv3d_backward(torch::Tensor 
     else {
         grad_weight_tmp = torch::zeros({1}, torch::TensorOptions().dtype(grad_weight.dtype()).layout(grad_weight.layout()).device(grad_weight.device().type(), grad_weight.device().index()));
     }
+
+    // if input requires grad, permute the weights channels dimensions 
+    if(inp_requires_grad) {
+        weight_permute = weight.permute({0, 1, 2, 3, 5, 4}).contiguous();
+    }
+    else {
+        weight_permute = weight;
+    }
+
     AT_DISPATCH_FLOATING_TYPES(
         input.scalar_type(), "abstract_conv3d_backward_wrapper", ([&] {
             abstract_conv3d_backward_wrapper_v2<scalar_t>(
                 grad_output.data_ptr<scalar_t>(), grad_input.data_ptr<scalar_t>(), grad_weight_tmp.data_ptr<scalar_t>(), 
                 inp_requires_grad, weight_requires_grad, input.data_ptr<scalar_t>(), offsets.data_ptr<int>(), 
                 resolutions.data_ptr<int>(), weight.data_ptr<scalar_t>(), 
+                weight_permute.data_ptr<scalar_t>(),
                 offsets_tmp.data_ptr<int>(),
                 batch_size, num_embeddings, input_channels, output_channels, k1, k2, k3, num_levels, hashmap_size);
     }));
