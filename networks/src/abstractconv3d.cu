@@ -165,15 +165,16 @@ __global__ void abstract_conv3d_forward_kernel_v4(
                     }
                     // compute if x_index != -1
                     if(x_index == -1) {
+                        weight_index += iosize;
                     } 
                     else {
                         // loop in for all the x's
                         int input_index = input_channels*(x_index*batch_size + b_idx);
                         for(int c=0; c<input_channels; c++) {
-                            res += weights[weight_index + c*output_channels + c_out] * input[input_index + c];
+                            res += weights[weight_index + c_out] * input[input_index + c];
+                            weight_index += output_channels;
                         }
                     }
-                    weight_index += iosize;
                 }
             }
         }
