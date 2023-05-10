@@ -39,6 +39,10 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
    }
 }
 
+bool is_power_of_two(int n) {
+    return (n & (n-1)) == 0;
+}
+
 __device__ __forceinline__ int compute_ravel_hash(const int *coord, const int resolution, const int hashmap_size) {
     // compute hash function for tiled grid
     int index;
@@ -594,6 +598,15 @@ torch::Tensor abstract_conv3d_forward(torch::Tensor input, torch::Tensor output,
     const int input_channels = input.size(2);
     const int output_channels = output.size(2);
     // kernel sizes (first index is levels)
+    if(!is_power_of_two(batch_size)) {
+        throw std::runtime_error("Batch size must be a power of 2");
+    }
+    if(!is_power_of_two(input_channels)) {
+        throw std::runtime_error("Input channels must be a power of 2");
+    }
+    if(!is_power_of_two(output_channels)) {
+        throw std::runtime_error("Output channels must be a power of 2");
+    }
 
     // this is v2 kernel
     const int k1 = weight.size(1);
