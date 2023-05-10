@@ -141,7 +141,7 @@ __global__ void abstract_conv3d_forward_kernel_v4(
         // now we have n, b, c --> time to get y[n, b, cout]
         scalar_t res = 0;
         // const scalar_t* weight_start = weights + level*kernel_volume*iosize;
-        int weight_index = level*kernel_volume*iosize;
+        int weight_index = level*kernel_volume*iosize + c_out;
         // cache this result in the beginning
         int coordstart[3];
         unravel_index(local_n, lvl_res, coordstart);
@@ -181,8 +181,9 @@ __global__ void abstract_conv3d_forward_kernel_v4(
                     else {
                         // loop in for all the x's
                         int input_index = input_channels*(x_index*batch_size + b_idx);
+                        // load input channels in chunks
                         for(int c=0; c<input_channels; c++) {
-                            res += weights[weight_index + c_out] * input[input_index + c];
+                            res += weights[weight_index] * input[input_index++];
                             weight_index += output_channels;
                         }
                     }
