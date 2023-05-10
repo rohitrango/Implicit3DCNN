@@ -19,11 +19,15 @@ from torch.utils.data import DataLoader
 from os import path as osp
 
 @torch.no_grad()
-def eval_validation_data(cfg, network, optim, val_dataset, best_metrics=None, epoch=None, writer=None, stop_at=None):
+def eval_validation_data(cfg, network, optim, val_dataset, best_metrics=None, epoch=None, writer=None, stop_at=None, tta=False, tta_samples=10):
     '''
     Check for validation performance here
     '''
     names = ['whole_tumor', 'tumor_core', 'enhancing_tumor']
+    if tta:
+        print("Using test time augmentation with {} samples".format(tta_samples))
+    segm_mode = cfg.TRAIN.BRATS_SEGM_MODE
+
     try:
         dice_scores = [[], [], []]
         gt_segms = []
@@ -36,7 +40,23 @@ def eval_validation_data(cfg, network, optim, val_dataset, best_metrics=None, ep
             coords = datum['xyz'].cuda() / (datum['dims'][None].cuda() - 1) * 2 - 1
             coords = coords[:, None]
             gt_segm = datum['segm'].cuda()
-            logits = network(embed, coords)[:, 0]
+            if tta:
+                fullpreds = 0
+                scales = np.linspace(0.9, 1.1, tta_samples)
+                for scale in scales:
+                    logits = network(embed * scale, coords)[:, 0]
+                    if segm_mode == 'raw':
+                        fullpreds += torch.softmax(logits, dim=-1)
+                    else:
+                        fullpreds += torch.sigmoid(logits)
+                logits = fullpreds/tta_samples
+            else:
+                logits = network(embed, coords)[:, 0]
+                if segm_mode == 'raw':
+                    pass
+                else:
+                    logits = torch.sigmoid(logits)
+
             pred_segms.append(logits)
             gt_segms.append(gt_segm)
             # compute the dice
@@ -59,7 +79,8 @@ def eval_validation_data(cfg, network, optim, val_dataset, best_metrics=None, ep
                     dice_scores[2].append(dice_score_val(pred_wt, gt_wt, num_classes=2, ignore_class=0)[0].item())
                 else:
                     # print(pred_segms.shape, gt_segms.shape)
-                    pred_segms = (torch.sigmoid(pred_segms)>=0.5).float()
+                    # pred_segms = (torch.sigmoid(pred_segms)>=0.5).float()
+                    pred_segms = (pred_segms>=0.5).float()
                     gts_brats = format_raw_gt_to_brats(gt_segms)
                     for i in range(3):
                         _d = dice_score_binary(pred_segms[..., i+1], gts_brats[i]).item()

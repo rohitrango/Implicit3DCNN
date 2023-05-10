@@ -19,6 +19,8 @@ from scripts.train_brats_segmentation import eval_validation_data
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--exp_name', type=str, required=True)
+    parser.add_argument('--tta', action='store_true', help="Test time augmentation")
+    parser.add_argument('--tta_samples', type=int, default=10, help="Number of test time augmentation samples")
     args = parser.parse_args()
 
     exp_path = osp.join('experiments', args.exp_name)
@@ -46,4 +48,4 @@ if __name__ == '__main__':
     network.load_state_dict(torch.load(osp.join(exp_path, 'best_model.pth'))['network'], strict=True)
 
     metrics = dict()
-    eval_validation_data(cfg, network, None, val_dataset, best_metrics=metrics, epoch=None, writer=None, stop_at=None)
+    eval_validation_data(cfg, network, None, val_dataset, best_metrics=metrics, epoch=None, writer=None, stop_at=None, tta=args.tta, tta_samples=args.tta_samples)

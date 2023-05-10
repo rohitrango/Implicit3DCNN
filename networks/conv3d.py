@@ -148,7 +148,8 @@ class HashRouterLayer(nn.Module):
 class AbstractConv3D(nn.Module):
     ''' Actual nn Module that implements the 3D convolution layer'''
     def __init__(self, channels_in, channels_out, resolutions, offsets, kernel_size=3, bias=True, num_levels=16,
-                 log_hashmap_size=19, cache_index=True):
+                 log_hashmap_size=19, cache_index=False):
+        # cache_index = False actually leads to faster inference (global memory takes 300-600 cycles to load)
         super().__init__()
         self.channels_in = channels_in
         self.channels_out = channels_out
