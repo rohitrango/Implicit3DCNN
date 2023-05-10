@@ -12,11 +12,11 @@ import matplotlib.pyplot as plt
 # given a batch size, generate a table
 batch_size = 1
 
-for input_channels in [2, 4, 8]:
+for input_channels in [2, 4, 8, 16, 32]:
     # Get inputs
-    encoder = ge.GridEncoder(level_dim=input_channels, desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=19).cuda()
+    encoder = ge.GridEncoder(level_dim=2, desired_resolution=256, gridtype='tiled', align_corners=True, log2_hashmap_size=19).cuda()
     embed = encoder.embeddings[:, None] * 1e3 # [N, 1, 2]
-    embed = embed.expand(-1, batch_size, -1).contiguous().detach()
+    embed = embed.repeat(1, batch_size, input_channels//2).contiguous().detach()
     offsets, resolutions = encoder.offsets, encoder.resolutions
     # now iterate over outputs
     for output_channels in [2, 4, 8, 16, 32, 64]:
