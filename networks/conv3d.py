@@ -212,13 +212,13 @@ if __name__ == '__main__':
     # # print(output.min(), output.max(), output.shape, embed.min(), embed.max(), embed.shape)
     # #input()
 
-    layer = AbstractConv3D(16, 16, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
+    layer = AbstractConv3D(2, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
 
     # # compute time
     # embed = embed.expand(-1, 32, -1).contiguous()
     a = time.time()
     # embed = embed.expand(-1, 4, 4).contiguous().detach()
-    embed = embed.repeat(1, 4, 8).contiguous().detach()
+    embed = embed.repeat(1, 4, 1).contiguous().detach()
     embed.requires_grad = True
     output = layer(embed)
     b = time.time()
