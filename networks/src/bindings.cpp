@@ -5,4 +5,5 @@
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("abstract_conv3d_forward", &abstract_conv3d_forward, "abstract_conv3d forward (CUDA)");
     m.def("abstract_conv3d_backward", &abstract_conv3d_backward, "abstract_conv3d backward (CUDA)");
+    m.def("abstract_conv3d_cache_index", &abstract_conv3d_cache_index, "abstract_conv3d cache index (CUDA)");
 }

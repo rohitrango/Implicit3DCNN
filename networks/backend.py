@@ -10,10 +10,10 @@ import torch
 
 _src_path = os.path.dirname(os.path.abspath(__file__))
 nvcc_flags = [
-    '-O3', '-std=c++14', 
+    # '-g', '-std=c++14', '-G', '-O3',
+    '-std=c++14', '-O3', '-lineinfo',
     '-U__CUDA_NO_HALF_OPERATORS__', '-U__CUDA_NO_HALF_CONVERSIONS__', '-U__CUDA_NO_HALF2_OPERATORS__',
 ]
-nvcc_flags = []
 if os.name == "posix":
     c_flags = ['-O3', '-std=c++14']
 elif os.name == "nt":
