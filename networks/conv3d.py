@@ -12,23 +12,46 @@ import time
 from tqdm import tqdm
 import numpy as np
 
+# Create cache function
+class ConvCacheIndex:
+    # classwide cache 
+    cache = {}
+    @staticmethod
+    def get(offsets, resolutions, hashmap_size, num_levels, K1, K2, K3):
+        # convert offsets and resolutions into tuple
+        key = offsets.tolist()
+        key.extend(resolutions.tolist())
+        key.extend([hashmap_size, num_levels, K1, K2, K3])
+        key = tuple(key)
+        if ConvCacheIndex.cache.get(key) is None:
+            print("Creating cache for key: ", (hashmap_size, num_levels, K1, K2, K3))
+            ConvCacheIndex.cache[key] = _backend.abstract_conv3d_cache_index(offsets, resolutions, num_levels, hashmap_size, K1, K2, K3)
+        return ConvCacheIndex.cache[key]
+
+
 class _abstract_conv3d(Function):
     @staticmethod
     @custom_fwd
-    def forward(ctx, input, offsets, resolutions, weight, bias, num_levels, hashmap_size):
+    def forward(ctx, input, offsets, resolutions, weight, bias, num_levels, hashmap_size, cache_index=False):
         ''' Forward pass
 
         :input: [batch_size, num_embeddings, channels_in]
         :weight: [num_levels, kernel_size, kernel_size, kernel_size, channels_in, channels_out]
         :bias: [num_levels, channels_out]
         '''
-        ctx.save_for_backward(input, offsets, resolutions, weight, bias, torch.tensor(num_levels), torch.tensor(hashmap_size), torch.tensor(input.requires_grad))
+        ctx.save_for_backward(input, offsets, resolutions, weight, bias, torch.tensor(num_levels), torch.tensor(hashmap_size), \
+                              torch.tensor(input.requires_grad), torch.tensor(cache_index))
         batch_size, num_embedding = input.shape[:2]
         channels_out = weight.shape[-1]
         output = torch.zeros((batch_size, num_embedding, channels_out), device=input.device, dtype=input.dtype)
         # Save backward tensors and return output
         # a = time.time()
-        output = _backend.abstract_conv3d_forward(input, output, offsets, resolutions, weight, bias, num_levels, hashmap_size)
+        if cache_index:
+            fwd_index = ConvCacheIndex.get(offsets, resolutions, int(hashmap_size), int(num_levels), weight.shape[1], weight.shape[2], weight.shape[3])[0]
+        else:
+            fwd_index = None
+
+        output = _backend.abstract_conv3d_forward(input, output, offsets, resolutions, weight, bias, num_levels, hashmap_size, fwd_index)
         # print("forward time : ", time.time() - a)
         # time.sleep(2)
         return output
@@ -39,7 +62,12 @@ class _abstract_conv3d(Function):
         ''' Backward pass
         :grad_outputs: [batch_size, num_embeddings, channels_out]
         '''
-        input, offsets, resolutions, weight, bias, num_levels, hashmap_size, inp_requires_grad = ctx.saved_tensors
+        input, offsets, resolutions, weight, bias, num_levels, hashmap_size, inp_requires_grad, cache_index = ctx.saved_tensors
+        cache_index = bool(cache_index.item())
+        if cache_index:
+            fwd_index, bwd_index = ConvCacheIndex.get(offsets, resolutions, int(hashmap_size), int(num_levels), weight.shape[1], weight.shape[2], weight.shape[3])
+        else:
+            fwd_index, bwd_index = None, None
         num_levels = int(num_levels.item())
         hashmap_size = int(hashmap_size.item())
         inp_requires_grad = bool(inp_requires_grad.item())
@@ -54,10 +82,11 @@ class _abstract_conv3d(Function):
         # print(f"input requires_grad : {inp_requires_grad}, weight requires_grad : {weight_requires_grad}")
         # a = time.time()
         input_grad, weight_grad, bias_grad = _backend.abstract_conv3d_backward(grad_outputs, input_grad, weight_grad, bias_grad, \
-                                                                               inp_requires_grad, weight_requires_grad, input, offsets, resolutions, weight, bias, num_levels, hashmap_size)
+                                                                               inp_requires_grad, weight_requires_grad, input, offsets, resolutions, weight, bias, num_levels, hashmap_size, \
+                                                                               fwd_index, bwd_index)
         # print("Backward time: {}".format(time.time() - a))
         # time.sleep(2)
-        return input_grad, None, None, weight_grad, bias_grad, None, None
+        return input_grad, None, None, weight_grad, bias_grad, None, None, None
 
 abstractConv3DFunction = _abstract_conv3d.apply
 
@@ -119,10 +148,11 @@ class HashRouterLayer(nn.Module):
 class AbstractConv3D(nn.Module):
     ''' Actual nn Module that implements the 3D convolution layer'''
     def __init__(self, channels_in, channels_out, resolutions, offsets, kernel_size=3, bias=True, num_levels=16,
-                 log_hashmap_size=19):
+                 log_hashmap_size=19, cache_index=True):
         super().__init__()
         self.channels_in = channels_in
         self.channels_out = channels_out
+        self.cache_index = cache_index
         # hash encoding params
         self.num_levels = num_levels
         self.hashmap_size = int(2**log_hashmap_size)
@@ -148,7 +178,7 @@ class AbstractConv3D(nn.Module):
         ''' forward pass 
         input: (B, N, C_in)
         '''
-        return abstractConv3DFunction(input, self.offsets, self.resolutions, self.weight, self.bias, self.num_levels, self.hashmap_size)
+        return abstractConv3DFunction(input, self.offsets, self.resolutions, self.weight, self.bias, self.num_levels, self.hashmap_size, self.cache_index)
 
 ## Check this
 if __name__ == '__main__':
@@ -212,14 +242,15 @@ if __name__ == '__main__':
     # # print(output.min(), output.max(), output.shape, embed.min(), embed.max(), embed.shape)
     # #input()
 
-    layer = AbstractConv3D(2, 8, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L).cuda()
+    layer = AbstractConv3D(8, 16, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=L, cache_index=True).cuda()
 
     # # compute time
     # embed = embed.expand(-1, 32, -1).contiguous()
-    a = time.time()
     # embed = embed.expand(-1, 4, 4).contiguous().detach()
-    embed = embed.repeat(1, 4, 1).contiguous().detach()
+    embed = embed.repeat(1, 4, 4).contiguous().detach()
     embed.requires_grad = True
+    output = layer(embed)
+    a = time.time()
     output = layer(embed)
     b = time.time()
     print(f"Time for conv3d: {b - a}")

@@ -97,7 +97,9 @@ __global__ void abstract_conv3d_forward_kernel_v4(
     const int output_channels,
     const int K1, const int K2, const int K3,
     const int num_levels,
-    const int hashmap_size) 
+    const int hashmap_size,
+    const int* fwd_index
+    ) 
 {
     const int num_outputs = batch_size*num_embeddings*output_channels;
     const int kernel_volume = K1*K2*K3;
@@ -143,6 +145,7 @@ __global__ void abstract_conv3d_forward_kernel_v4(
         int coordstart[3];
         unravel_index(local_n, lvl_res, coordstart);
 
+        int fwd_index_index = n_idx * kernel_volume;   // set to n_idx, and loop over all kernel indices
         for(int k1idx=0; k1idx<K1; k1idx++) {
             int k1 = k1idx - K1/2;
             for(int k2idx=0; k2idx<K2; k2idx++) {
@@ -151,21 +154,25 @@ __global__ void abstract_conv3d_forward_kernel_v4(
                     int k3 = k3idx - K3/2;
                     // get neighboring index
                     int x_index;
-                    int coord[3];
-                    #pragma unroll
-                    for(int i=0; i<3; i++)
-                        coord[i] = coordstart[i];
-
-                    // resolve x index
-                    if(lvl_res3 > hashmap_size) {   // this is a big resolution, simply compute the (x + dx) % T
-                        x_index = modpow2((local_n + compute_diff_hash(k1, k2, k3, lvl_res, hashmap_size)), hashmap_size) + offset_lvl;
-                    }
-                    else {  // only one point corresponds to this n, find it
-                        coord[0] += k1; coord[1] += k2; coord[2] += k3;
-                        if(out_of_bounds(coord, lvl_res))
-                            x_index = -1;
-                        else
-                            x_index = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;
+                    if(fwd_index) {
+                        x_index = fwd_index[fwd_index_index];
+                        fwd_index_index++;
+                    } else {
+                        int coord[3];
+                        #pragma unroll
+                        for(int i=0; i<3; i++)
+                            coord[i] = coordstart[i];
+                        // resolve x index
+                        if(lvl_res3 > hashmap_size) {   // this is a big resolution, simply compute the (x + dx) % T
+                            x_index = modpow2((local_n + compute_diff_hash(k1, k2, k3, lvl_res, hashmap_size)), hashmap_size) + offset_lvl;
+                        }
+                        else {  // only one point corresponds to this n, find it
+                            coord[0] += k1; coord[1] += k2; coord[2] += k3;
+                            if(out_of_bounds(coord, lvl_res))
+                                x_index = -1;
+                            else
+                                x_index = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;
+                        }
                     }
                     // compute if x_index != -1
                     if(x_index == -1) {
@@ -210,7 +217,8 @@ __global__ void abstract_conv3d_backward_input_kernel(
     const int output_channels,
     const int K1, const int K2, const int K3,
     const int num_levels,
-    const int hashmap_size
+    const int hashmap_size,
+    const int *__restrict__ bwd_index
 ) {
     // For each block, fetch the embedding id, block number and output
     int num = batch_size*num_embeddings*input_channels;
@@ -249,6 +257,8 @@ __global__ void abstract_conv3d_backward_input_kernel(
         int startcoord[3];
         unravel_index(local_n, lvl_res, startcoord);
         // loop over all the weights
+        int bwd_index_index = n_idx * kernel_volume;
+
         for(int k1idx=0; k1idx<K1; k1idx++) {
             int k1 = k1idx - K1/2;
             for(int k2idx=0; k2idx<K2; k2idx++) {
@@ -257,20 +267,26 @@ __global__ void abstract_conv3d_backward_input_kernel(
                     // for (k1, k2, k3), get weight
                     int k3 = k3idx - K3/2;
                     int y_index;
-                    int coord[3];
-                    #pragma unroll
-                    for(int i=0; i<3; i++)
-                        coord[i] = startcoord[i];
-
-                    if(lvl_res3 > hashmap_size) {   // this is a big resolution, simply compute the (x + dx) % T
-                        y_index = modpow2((local_n + compute_diff_hash(-k1, -k2, -k3, lvl_res, hashmap_size)), hashmap_size) + offset_lvl;
+                    if(bwd_index)  {
+                        y_index = bwd_index[bwd_index_index];
+                        bwd_index_index++;
                     }
-                    else {  // only one point corresponds to this n, find it
-                        coord[0] -= k1; coord[1] -= k2; coord[2] -= k3;
-                        if(out_of_bounds(coord, lvl_res))
-                            y_index = -1;
-                        else
-                            y_index = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;
+                    else {
+                        int coord[3];
+                        #pragma unroll
+                        for(int i=0; i<3; i++)
+                            coord[i] = startcoord[i];
+
+                        if(lvl_res3 > hashmap_size) {   // this is a big resolution, simply compute the (x + dx) % T
+                            y_index = modpow2((local_n + compute_diff_hash(-k1, -k2, -k3, lvl_res, hashmap_size)), hashmap_size) + offset_lvl;
+                        }
+                        else {  // only one point corresponds to this n, find it
+                            coord[0] -= k1; coord[1] -= k2; coord[2] -= k3;
+                            if(out_of_bounds(coord, lvl_res))
+                                y_index = -1;
+                            else
+                                y_index = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;
+                        }
                     }
                     // compute if x_index != -1
                     if(y_index == -1) {
@@ -313,7 +329,8 @@ __global__ void abstract_conv3d_backward_weight_kernel_v2(
     const int input_channels,
     const int output_channels,
     const int K1, const int K2, const int K3,
-    const int num_levels, const int hashmap_size
+    const int num_levels, const int hashmap_size,
+    const int* __restrict__ fwd_index
 ) {
     // loop over y, and add gradient  
     const int num = batch_size * num_embeddings * output_channels;
@@ -322,7 +339,7 @@ __global__ void abstract_conv3d_backward_weight_kernel_v2(
 
     __shared__ scalar_t input_shared[THREADS];
     cg::thread_group tile = cg::tiled_partition(cg::this_thread_block(), min(WARPSIZE, output_channels));
-    const bool is_small_tile = output_channels > WARPSIZE; // to check if output channels is much more than tile size, in which case inputs need to be loaded carefully
+    // const bool is_small_tile = output_channels > WARPSIZE; // to check if output channels is much more than tile size, in which case inputs need to be loaded carefully
     const int tile_id = tile.thread_rank();
     const int tile_size = tile.size();
 
@@ -356,30 +373,34 @@ __global__ void abstract_conv3d_backward_weight_kernel_v2(
         // weight index to add to
         int wt_idx = grad_wt_offset*kernel_size*iosize + c_out;
 
-        int kernel_idx=-1;
+        int fwd_index_index = n_idx*kernel_size;
+
         for(int k1idx=0; k1idx<K1; k1idx++) {
             int k1 = k1idx - K1/2;
             for(int k2idx=0; k2idx<K2; k2idx++) {
                 int k2 = k2idx - K2/2;
                 for(int k3idx=0; k3idx<K3; k3idx++) {
                     int k3 = k3idx - K3/2;
-                    int coord[3];
-                    #pragma unroll
-                    for(int i=0; i<3; i++)
-                        coord[i] = startcoord[i];
+                    if(fwd_index) {
+                        xindex = fwd_index[fwd_index_index++];
+                    } else {
+                        int coord[3];
+                        #pragma unroll
+                        for(int i=0; i<3; i++)
+                            coord[i] = startcoord[i];
 
-                    if(lvl_res3 > hashmap_size) {   // this is a big resolution, simply compute the (x + dx) % T
-                        xindex = modpow2((compute_diff_hash(k1, k2, k3, lvl_res, hashmap_size) + local_n), hashmap_size) + offset_lvl;
-                    }
-                    else {  // only one point corresponds to this n, find it
-                        coord[0] += k1; coord[1] += k2; coord[2] += k3;
-                        if(out_of_bounds(coord, lvl_res))
-                            xindex = -1;
-                        else
-                            xindex = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;
+                        if(lvl_res3 > hashmap_size) {   // this is a big resolution, simply compute the (x + dx) % T
+                            xindex = modpow2((compute_diff_hash(k1, k2, k3, lvl_res, hashmap_size) + local_n), hashmap_size) + offset_lvl;
+                        }
+                        else {  // only one point corresponds to this n, find it
+                            coord[0] += k1; coord[1] += k2; coord[2] += k3;
+                            if(out_of_bounds(coord, lvl_res))
+                                xindex = -1;
+                            else
+                                xindex = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;
+                        }
                     }
                     // compute if x_index != -1
-                    kernel_idx++;
                     if(xindex == -1) {
                         wt_idx += iosize;
                         continue;
@@ -460,7 +481,8 @@ void abstract_conv3d_forward_wrapper(
     const int output_channels,
     const int K1, const int K2, const int K3,
     const int num_levels,
-    const int hashmap_size
+    const int hashmap_size,
+    const int* fwd_index
 ) { 
     // works good!
     // const uint32_t blocks = min((num_embeddings*batch_size*output_channels + THREADS - 1) / THREADS, 1<<30 - 1);
@@ -468,7 +490,7 @@ void abstract_conv3d_forward_wrapper(
     abstract_conv3d_forward_kernel_v4<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
         input, output, offsets, resolutions, weights, bias,
         batch_size, num_embeddings, input_channels, output_channels,
-        K1, K2, K3, num_levels, hashmap_size
+        K1, K2, K3, num_levels, hashmap_size, fwd_index
     );
     // gpuErrchk(cudaPeekAtLastError());
     // gpuErrchk(cudaDeviceSynchronize());
@@ -494,7 +516,9 @@ void abstract_conv3d_backward_wrapper_v2(
     const int output_channels,
     const int K1, const int K2, const int K3,
     const int num_levels,
-    const int hashmap_size
+    const int hashmap_size,
+    const int* __restrict__ fwd_index,
+    const int* __restrict__ bwd_index
 ) {
     if(inp_requires_grad) {
         const uint32_t blocks = min(div_up(num_embeddings*batch_size*input_channels, THREADS), 1<<30 - 1);
@@ -503,7 +527,7 @@ void abstract_conv3d_backward_wrapper_v2(
             grad_output, grad_input, 
             input, offsets, resolutions, weights_permute, 
             batch_size, num_embeddings, input_channels, output_channels,
-            K1, K2, K3, num_levels, hashmap_size
+            K1, K2, K3, num_levels, hashmap_size, bwd_index
         );
         // gpuErrchk(cudaPeekAtLastError());
         // gpuErrchk(cudaDeviceSynchronize());
@@ -514,7 +538,7 @@ void abstract_conv3d_backward_wrapper_v2(
             grad_output, grad_weights_tmp, 
             input, offsets, resolutions, weights, offsets_tmp, 
             batch_size, num_embeddings, input_channels, output_channels,
-            K1, K2, K3, num_levels, hashmap_size
+            K1, K2, K3, num_levels, hashmap_size, fwd_index
         );
         // gpuErrchk(cudaPeekAtLastError());
         // gpuErrchk(cudaDeviceSynchronize());
@@ -522,7 +546,7 @@ void abstract_conv3d_backward_wrapper_v2(
 }
 
 torch::Tensor abstract_conv3d_forward(torch::Tensor input, torch::Tensor output, torch::Tensor offsets, torch::Tensor resolutions,
-        torch::Tensor weight, at::optional<torch::Tensor> bias, int num_levels, int hashmap_size) {
+        torch::Tensor weight, at::optional<torch::Tensor> bias, int num_levels, int hashmap_size, at::optional<torch::Tensor> fwd_index) {
     /* 
     
     input: input hash entries    (N, B, C_in)
@@ -546,6 +570,10 @@ torch::Tensor abstract_conv3d_forward(torch::Tensor input, torch::Tensor output,
     if(bias.has_value()) {
         CHECK_CUDA(bias.value());
         CHECK_CONTIGUOUS(bias.value());
+    }
+    if(fwd_index.has_value()) {
+        CHECK_CUDA(fwd_index.value());
+        CHECK_CONTIGUOUS(fwd_index.value());
     }
 
     if(input.dim() != 3) {
@@ -573,14 +601,97 @@ torch::Tensor abstract_conv3d_forward(torch::Tensor input, torch::Tensor output,
     AT_DISPATCH_FLOATING_TYPES( 
     input.scalar_type(), "abstract_conv3d_forward_wrapper", ([&] {
         abstract_conv3d_forward_wrapper<scalar_t>(input.data_ptr<scalar_t>(), output.data_ptr<scalar_t>(), offsets.data_ptr<int>(), resolutions.data_ptr<int>(), weight.data_ptr<scalar_t>(), \
-            bias.has_value() ? bias.value().data_ptr<scalar_t>() : nullptr, batch_size, num_embeddings, input_channels, output_channels, k1, k2, k3, num_levels, hashmap_size);
+            bias.has_value() ? bias.value().data_ptr<scalar_t>() : nullptr, batch_size, num_embeddings, input_channels, output_channels, k1, k2, k3, num_levels, hashmap_size,
+            fwd_index.has_value()? fwd_index.value().data_ptr<int>(): nullptr);
     }));
     return output;
 }
 
+__global__ void compute_kernel_index(
+    const int * __restrict__ offsets,
+    const int * __restrict__ resolutions,
+    int * __restrict__ fwd_index,
+    const int num_embeddings,
+    const int num_levels,
+    const int hashmap_size,
+    const int K1,
+    const int K2,
+    const int K3,
+    const int forward_sign
+) {
+    const int num = num_embeddings * K1 * K2 * K3;
+    CUDA_KERNEL_LOOP(index_temp, num) {
+        int index = index_temp;
+        int k3_idx = index % K3;
+        index = index / K3;
+        int k2_idx = index % K2;
+        index = index / K2;
+        int k1_idx = index % K1;
+        int n_idx = index / K1;
+        // update k1idx etc
+        k1_idx = forward_sign * (k1_idx - K1/2);
+        k2_idx = forward_sign * (k2_idx - K2/2);
+        k3_idx = forward_sign * (k3_idx - K3/2);
+        // get level information
+        int level = get_level(offsets, n_idx, num_levels);
+        int offset_lvl = offsets[level];
+        int local_n = n_idx - offset_lvl;
+        int lvl_res = resolutions[level];
+        int lvl_res3 = lvl_res*lvl_res*lvl_res;
+        if(local_n >= lvl_res3)
+            continue;
+        // [n, k1, k2, k3] is a valid index
+        int coord[3];
+        unravel_index(local_n, lvl_res, coord);
+        int x_index = -1;
+        // resolve x index
+        if(lvl_res3 > hashmap_size) {   // this is a big resolution, simply compute the (x + dx) % T
+            x_index = modpow2((local_n + compute_diff_hash(k1_idx, k2_idx, k3_idx, lvl_res, hashmap_size)), hashmap_size) + offset_lvl;
+        }
+        else {  // only one point corresponds to this n, find it
+            coord[0] += k1_idx; coord[1] += k2_idx; coord[2] += k3_idx;
+            if(out_of_bounds(coord, lvl_res))
+                x_index = -1;
+            else
+                x_index = compute_ravel_hash(coord, lvl_res, hashmap_size) + offset_lvl;
+        }
+        fwd_index[index_temp] = x_index;
+    }
+}
+
+std::vector<torch::Tensor> abstract_conv3d_cache_index(torch::Tensor offsets, torch::Tensor resolutions, int num_levels, 
+    int hashmap_size, int K1, int K2, int K3) {
+    /* Returns two maps, containing the forward and backward indices for given kernel indices
+    */ 
+    CHECK_CUDA(offsets);
+    CHECK_CUDA(resolutions);
+    CHECK_CONTIGUOUS(offsets);
+    CHECK_CONTIGUOUS(resolutions);
+    
+    const int num_embeddings = offsets.index({num_levels}).item<int>();
+    const int kernel_size = K1*K2*K3;
+    torch::Tensor fwd_index = torch::zeros({num_embeddings, kernel_size}, \
+                torch::TensorOptions().dtype(torch::kInt32).device(offsets.device().type(), offsets.device().index())) - 1;
+    torch::Tensor bwd_index = torch::zeros({num_embeddings, kernel_size}, \
+                torch::TensorOptions().dtype(torch::kInt32).device(offsets.device().type(), offsets.device().index())) - 1;
+    const uint32_t blocks = min(div_up(num_embeddings*kernel_size, THREADS), 1<<30 - 1);
+    compute_kernel_index<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        offsets.data_ptr<int>(), resolutions.data_ptr<int>(), fwd_index.data_ptr<int>(), num_embeddings, num_levels, hashmap_size, K1, K2, K3, 1
+    );
+    // gpuErrchk(cudaPeekAtLastError());
+    // gpuErrchk(cudaDeviceSynchronize());
+    compute_kernel_index<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        offsets.data_ptr<int>(), resolutions.data_ptr<int>(), bwd_index.data_ptr<int>(), num_embeddings, num_levels, hashmap_size, K1, K2, K3, -1
+    );
+    // gpuErrchk(cudaPeekAtLastError());
+    // gpuErrchk(cudaDeviceSynchronize());
+    return {fwd_index, bwd_index};
+}
+
 std::vector<at::optional<torch::Tensor>> abstract_conv3d_backward(torch::Tensor grad_output, torch::Tensor grad_input, torch::Tensor grad_weight, at::optional<torch::Tensor> grad_bias,
         bool inp_requires_grad, bool weight_requires_grad, torch::Tensor input, torch::Tensor offsets, torch::Tensor resolutions,
-        torch::Tensor weight, at::optional<torch::Tensor> bias, int num_levels, int hashmap_size) {
+        torch::Tensor weight, at::optional<torch::Tensor> bias, int num_levels, int hashmap_size, 
+        at::optional<torch::Tensor> fwd_index, at::optional<torch::Tensor> bwd_index) {
     /* 
     ****** VERSION 1 ******
     Kernel for backward pass 
@@ -641,6 +752,9 @@ std::vector<at::optional<torch::Tensor>> abstract_conv3d_backward(torch::Tensor 
         weight_permute = weight;
     }
 
+    int* fwd_index_ptr = fwd_index.has_value()? fwd_index.value().data_ptr<int>(): nullptr;
+    int* bwd_index_ptr = bwd_index.has_value()? bwd_index.value().data_ptr<int>(): nullptr;
+
     AT_DISPATCH_FLOATING_TYPES(
         input.scalar_type(), "abstract_conv3d_backward_wrapper", ([&] {
             abstract_conv3d_backward_wrapper_v2<scalar_t>(
@@ -649,7 +763,7 @@ std::vector<at::optional<torch::Tensor>> abstract_conv3d_backward(torch::Tensor 
                 resolutions.data_ptr<int>(), weight.data_ptr<scalar_t>(), 
                 weight_permute.data_ptr<scalar_t>(),
                 offsets_tmp.data_ptr<int>(),
-                batch_size, num_embeddings, input_channels, output_channels, k1, k2, k3, num_levels, hashmap_size);
+                batch_size, num_embeddings, input_channels, output_channels, k1, k2, k3, num_levels, hashmap_size, fwd_index_ptr, bwd_index_ptr);
     }));
 
     // TODO: Run aggregation over weight pointer
