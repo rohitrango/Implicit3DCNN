@@ -14,11 +14,14 @@ v2: <B, N, K1,K2,K3> blocks, hopefully faster with lot of coalescing
 #include <vector>
 #include <cooperative_groups.h>
 
+namespace cg = cooperative_groups;
+
 #include <cuda.h>
 #include <cuda_runtime.h>
 
 #define THREADS 512
 #define CONST_DIV 64
+#define WARPSIZE 32
 #define CHECK_CUDA(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define div_up(x, n) ((x)+(n)-1)/(n)
@@ -313,9 +316,15 @@ __global__ void abstract_conv3d_backward_weight_kernel_v2(
     const int num_levels, const int hashmap_size
 ) {
     // loop over y, and add gradient  
-    int num = batch_size * num_embeddings * output_channels;
-    int iosize = input_channels * output_channels;
-    int kernel_size = K1*K2*K3;
+    const int num = batch_size * num_embeddings * output_channels;
+    const int iosize = input_channels * output_channels;
+    const int kernel_size = K1*K2*K3;
+
+    __shared__ scalar_t input_shared[THREADS];
+    cg::thread_group tile = cg::tiled_partition(cg::this_thread_block(), min(WARPSIZE, output_channels));
+    const bool is_small_tile = output_channels > WARPSIZE; // to check if output channels is much more than tile size, in which case inputs need to be loaded carefully
+    const int tile_id = tile.thread_rank();
+    const int tile_size = tile.size();
 
     CUDA_KERNEL_LOOP(index, num) { 
         // get n, batch index, and output channel index
@@ -376,12 +385,31 @@ __global__ void abstract_conv3d_backward_weight_kernel_v2(
                         continue;
                     }
                     int inp_idx = input_channels*(xindex*batch_size + b_idx);
-                    for(int c = 0; c < input_channels; c++) {
-                        grad_res = yval * input[inp_idx];
-                        inp_idx++;
-                        atomicAdd(grad_weights_tmp + wt_idx, grad_res);
-                        wt_idx+=output_channels;
-                    } 
+                    //// Shared memory version, load inputs according to tile size
+                    for(int i=0; i<input_channels; i+=tile_size) {
+                        int iidx = i + tile_id;
+                        if(iidx < input_channels) {
+                            input_shared[threadIdx.x] = input[inp_idx + iidx];
+                        }
+                        tile.sync();
+                        // input[i, i+tilesize] is loaded
+                        int ctr = 0;
+                        int maxctr = min(i+tile_size, input_channels);
+                        for(int j=i; j<maxctr; j++) {
+                            grad_res = yval * input_shared[threadIdx.x - tile_id + ctr];
+                            atomicAdd(grad_weights_tmp + wt_idx, grad_res);
+                            wt_idx += output_channels;
+                            ctr++;
+                        }
+                        tile.sync();
+                    }
+                    //// Naive version - loop over inputs and then atomicAdd to weights
+                    // for(int c = 0; c < input_channels; c++) {
+                    //     grad_res = yval * input[inp_idx];
+                    //     inp_idx++;
+                    //     atomicAdd(grad_weights_tmp + wt_idx, grad_res);
+                    //     wt_idx+=output_channels;
+                    // } 
                     // weight idx += iosize has been done here
                 }
             }
