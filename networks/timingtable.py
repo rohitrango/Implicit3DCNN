@@ -10,7 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # given a batch size, generate a table
-batch_size = 1
+batch_size = 4
 
 for input_channels in [2, 4, 8, 16, 32]:
     # Get inputs
@@ -19,7 +19,7 @@ for input_channels in [2, 4, 8, 16, 32]:
     embed = embed.repeat(1, batch_size, input_channels//2).contiguous().detach()
     offsets, resolutions = encoder.offsets, encoder.resolutions
     # now iterate over outputs
-    for output_channels in [2, 4, 8, 16, 32, 64]:
+    for output_channels in [2, 4, 8, 16, 32]:
         conv = AbstractConv3D(input_channels, output_channels, resolutions, offsets, 3, bias=True, num_levels=16, log_hashmap_size=19).cuda()
         input_ = embed.clone().requires_grad_(True)
         # run forward

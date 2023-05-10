@@ -104,6 +104,7 @@ __global__ void abstract_conv3d_forward_kernel_v4(
     const int num_outputs = batch_size*num_embeddings*output_channels;
     const int kernel_volume = K1*K2*K3;
     const int iosize = input_channels*output_channels;
+    const bool query_index = (fwd_index != NULL);
 
     // pull this into shared memory
     __shared__ int resolutions_shared[32];
@@ -154,9 +155,8 @@ __global__ void abstract_conv3d_forward_kernel_v4(
                     int k3 = k3idx - K3/2;
                     // get neighboring index
                     int x_index;
-                    if(fwd_index) {
-                        x_index = fwd_index[fwd_index_index];
-                        fwd_index_index++;
+                    if(query_index) {
+                        x_index = fwd_index[fwd_index_index++];
                     } else {
                         int coord[3];
                         #pragma unroll
@@ -224,6 +224,7 @@ __global__ void abstract_conv3d_backward_input_kernel(
     int num = batch_size*num_embeddings*input_channels;
     int kernel_volume = K1*K2*K3;
     int iosize = input_channels*output_channels;
+    const bool query = (bwd_index != NULL);
 
     // pull this into shared memory
     __shared__ int resolutions_shared[32];
@@ -267,9 +268,8 @@ __global__ void abstract_conv3d_backward_input_kernel(
                     // for (k1, k2, k3), get weight
                     int k3 = k3idx - K3/2;
                     int y_index;
-                    if(bwd_index)  {
-                        y_index = bwd_index[bwd_index_index];
-                        bwd_index_index++;
+                    if(query)  {
+                        y_index = bwd_index[bwd_index_index++];
                     }
                     else {
                         int coord[3];
@@ -342,6 +342,7 @@ __global__ void abstract_conv3d_backward_weight_kernel_v2(
     // const bool is_small_tile = output_channels > WARPSIZE; // to check if output channels is much more than tile size, in which case inputs need to be loaded carefully
     const int tile_id = tile.thread_rank();
     const int tile_size = tile.size();
+    const bool query_index = fwd_index != NULL;
 
     CUDA_KERNEL_LOOP(index, num) { 
         // get n, batch index, and output channel index
@@ -374,14 +375,14 @@ __global__ void abstract_conv3d_backward_weight_kernel_v2(
         int wt_idx = grad_wt_offset*kernel_size*iosize + c_out;
 
         int fwd_index_index = n_idx*kernel_size;
-
         for(int k1idx=0; k1idx<K1; k1idx++) {
             int k1 = k1idx - K1/2;
             for(int k2idx=0; k2idx<K2; k2idx++) {
                 int k2 = k2idx - K2/2;
                 for(int k3idx=0; k3idx<K3; k3idx++) {
                     int k3 = k3idx - K3/2;
-                    if(fwd_index) {
+                    // find xindex
+                    if(query_index) {
                         xindex = fwd_index[fwd_index_index++];
                     } else {
                         int coord[3];
