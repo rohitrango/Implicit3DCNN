@@ -25,7 +25,10 @@ class BRATS2021Dataset(Dataset):
         self.seg   = dict()
         for dir in self.dirs:
             allniftis = sorted(glob(osp.join(dir, '*.nii.gz')))
-            segnifti = [n for n in allniftis if 'seg' in n][0]
+            try:
+                segnifti = [n for n in allniftis if 'seg' in n][0]
+            except:
+                segnifti = None
             inputsnifti = [n for n in allniftis if 'seg' not in n]
             if not multimodal:
                 inputsnifti = [inputsnifti[mlabel]]
