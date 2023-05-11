@@ -22,6 +22,7 @@ import argparse
 import gc
 from utils import init_network
 from configs.config import get_cfg_defaults
+import numpy as np
 
 ROOT_DIR = "/data/rohitrango/BRATS2021/val/"
 ENCODER_DIR = "/data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal"
@@ -29,7 +30,61 @@ OUT_DIR = "/data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal_val/"
 NUM_PTS = 200000
 EPOCHS = 2500
 
+@torch.no_grad()
+def create_seg(fold_id, max_folds, experiment_names):
+    '''
+    Given a fold id and max folds, split the work between the encoders, load the networks,
+    and create the segmentation volumes
+    '''
+    print("Running create_seg with fold {}/{}".format(fold_id, max_folds))
+    encoder_paths = list(sorted(glob(OUT_DIR + "/*.pth") ))[fold_id::max_folds]
+    device = torch.device("cuda")
+    ## load experiments
+    enc = GridEncoder(level_dim=2, desired_resolution=196).to(device)
+    offsets = enc.offsets.cuda()
+    resolutions = enc.resolutions.cuda()
+    networks = []
+    for exp in experiment_names:
+        exp_path = osp.join('experiments', exp)
+        cfg_path = osp.join(exp_path, 'config.yaml')
+        cfg = get_cfg_defaults()
+        cfg.merge_from_file(cfg_path)
+        network = init_network(cfg, offsets, resolutions).cuda()
+        network.load_state_dict(torch.load(osp.join(exp_path, 'best_model.pth'))['network'], strict=True)
+        network.eval()
+        network.requires_grad_(False)
+        networks.append(network)
+        print("Loaded network from {}".format(exp_path))
+    num_networks = len(networks)
+    
+    H, W, D = 240, 240, 155
+
+    # load encoders
+    for enc in encoder_paths:
+        # for this encoder, run all the networks through this encoding, and visualize the segmentation
+        ########################
+        allseg = 0
+        encoder = torch.load(enc).cuda()[:, None].contiguous()  # [N, 1, C]
+        encoder /= 0.05
+        xyz = torch.meshgrid(torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), torch.linspace(-1, 1, D), indexing='ij')
+        xyz = torch.stack(xyz, dim=-1).cuda()  # [H, W, D, 3]
+        xyzflat = xyz.reshape(-1, 1, 3)  # [H*W*D, 1, 3]
+        for net in networks:
+            allseg = allseg + torch.sigmoid(net(encoder, xyzflat).reshape(H, W, D, -1))[..., 1:]  # [H, W, D, C], discard the 0th index which is the background
+        allseg = allseg / num_networks
+        # save it
+        nib.save(nib.Nifti1Image(allseg.cpu().numpy(), np.eye(4)), enc.replace(".pth", ".nii.gz"))
+        print("Saved segmentation to {}".format(enc.replace(".pth", ".nii.gz")))
+
+
+
 def worker(fold_id, max_folds, experiment_names):
+    '''
+    Given a fold id and max folds, split the work, load the unimodal decoders (hardcoded paths) 
+    corresponding images, encode them, save the embeddings
+
+    `create_seg` function will handle creating the outputs
+    '''
     # load decoders
     print("Running fold {} in process {}".format(fold_id, max_folds))
     dirqueue = list(sorted(glob(ROOT_DIR + "/*") ))[fold_id::max_folds]
@@ -43,22 +98,6 @@ def worker(fold_id, max_folds, experiment_names):
         decoders[i].load_state_dict(torch.load(osp.join(ENCODER_DIR, f"decoder{i}.pth")))
         decoders[i].eval()
         decoders[i].requires_grad_(False)
-    ### load experiments
-    # enc = GridEncoder(level_dim=2, desired_resolution=196).to(device)
-    # offsets = enc.offsets.cuda()
-    # resolutions = enc.resolutions.cuda()
-    # networks = []
-    # for exp in experiment_names:
-    #     exp_path = osp.join('experiments', exp)
-    #     cfg_path = osp.join(exp_path, 'config.yaml')
-    #     cfg = get_cfg_defaults()
-    #     cfg.merge_from_file(cfg_path)
-    #     network = init_network(cfg, offsets, resolutions).cuda()
-    #     network.load_state_dict(torch.load(osp.join(exp_path, 'best_model.pth'))['network'], strict=True)
-    #     network.eval()
-    #     network.requires_grad_(False)
-    #     networks.append(network)
-    #     print("Loaded network from {}".format(exp_path))
     for q in dirqueue:
         files = sorted(glob(q + "/*"))
         print("Processing {:s}".format(q))
@@ -111,6 +150,6 @@ if __name__ == '__main__':
     if args.mode == "create_embedding":
         worker(cur_fold, folds, args.experiment_names)
     elif args.mode == "create_segmentation":
-        raise NotImplementedError
+        create_seg(cur_fold, folds, args.experiment_names)
     else:
         raise ValueError("Invalid mode {}".format(args.mode))
