@@ -17,9 +17,11 @@ import tensorboardX
 import os
 from torch.utils.data import DataLoader
 from os import path as osp
+import nibabel as nib
 
 @torch.no_grad()
-def eval_validation_data(cfg, network, optim, val_dataset, best_metrics=None, epoch=None, writer=None, stop_at=None, tta=False, tta_samples=10):
+def eval_validation_data(cfg, network, optim, val_dataset, best_metrics=None, epoch=None, writer=None, stop_at=None, tta=False, tta_samples=10,
+                            save_preds=False, save_dir="./valcheck"):
     '''
     Check for validation performance here
     '''
@@ -86,9 +88,11 @@ def eval_validation_data(cfg, network, optim, val_dataset, best_metrics=None, ep
                         _d = dice_score_binary(pred_segms[..., i+1], gts_brats[i]).item()
                         # print(i, _d)
                         dice_scores[2-i].append(_d)
-                    # dice_scores[2].append(dice_score_binary(pred_segms[..., 1], gts_brats[0]).item())  # ET
-                    # dice_scores[1].append(dice_score_binary(pred_segms[..., 2], gts_brats[1]).item())  # TC
-                    # dice_scores[0].append(dice_score_binary(pred_segms[..., 3], gts_brats[2]).item())  # WT
+                    pred_segms_npy = pred_segms.reshape(*datum['dims'], -1).data.cpu().numpy()[..., 1:]
+                    gt_segms_npy = gt_segms.reshape(*datum['dims'], -1).data.cpu().numpy()
+                    if save_preds:
+                        nib.save(nib.Nifti1Image(pred_segms_npy, np.eye(4)), osp.join(save_dir, f"pred_{idx}.nii.gz"))
+                        nib.save(nib.Nifti1Image(gt_segms_npy, np.eye(4)), osp.join(save_dir, f"gt_{idx}.nii.gz"))
                 # reset
                 pred_segms = []
                 gt_segms = []

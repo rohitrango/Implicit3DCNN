@@ -8,3 +8,4 @@ baselines/*
 Implicit3DCNN.egg-info/
 experiments
 *.txt
+valcheck/

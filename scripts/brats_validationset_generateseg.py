@@ -58,7 +58,6 @@ def create_seg(fold_id, max_folds, experiment_names):
     num_networks = len(networks)
     
     H, W, D = 240, 240, 155
-
     # load encoders
     for enc in encoder_paths:
         # for this encoder, run all the networks through this encoding, and visualize the segmentation
@@ -72,10 +71,10 @@ def create_seg(fold_id, max_folds, experiment_names):
         for net in networks:
             allseg = allseg + torch.sigmoid(net(encoder, xyzflat).reshape(H, W, D, -1))[..., 1:]  # [H, W, D, C], discard the 0th index which is the background
         allseg = allseg / num_networks
+        print(allseg.min(), allseg.max())
         # save it
         nib.save(nib.Nifti1Image(allseg.cpu().numpy(), np.eye(4)), enc.replace(".pth", ".nii.gz"))
         print("Saved segmentation to {}".format(enc.replace(".pth", ".nii.gz")))
-
 
 
 def worker(fold_id, max_folds, experiment_names):
