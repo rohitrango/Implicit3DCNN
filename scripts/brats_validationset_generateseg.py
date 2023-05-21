@@ -27,8 +27,9 @@ import numpy as np
 ROOT_DIR = "/data/rohitrango/BRATS2021/val/"
 ENCODER_DIR = "/data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal"
 OUT_DIR = "/data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal_val/"
-NUM_PTS = 200000
-EPOCHS = 2500
+NUM_PTS = 100000  # number of points to sample
+EPOCHS = 1000   # epochs to train worker for
+brats_encoder_lr = 1e-2
 
 @torch.no_grad()
 def create_seg(fold_id, max_folds, experiment_names):
@@ -93,17 +94,20 @@ def worker(fold_id, max_folds, experiment_names):
             nn.LeakyReLU(),
             nn.Linear(256, 1)
         ).to(device) for _ in range(4)]
+
+    # load decoder path
     for i in range(4):
         decoders[i].load_state_dict(torch.load(osp.join(ENCODER_DIR, f"decoder{i}.pth")))
         decoders[i].eval()
         decoders[i].requires_grad_(False)
+
     for q in dirqueue:
         files = sorted(glob(q + "/*"))
         print("Processing {:s}".format(q))
         images = [torch.from_numpy(nib.load(f).get_fdata()).float().to(device) for f in files]
         images = [uniform_normalize(img) for img in images]
         encoders = [GridEncoder(level_dim=2, desired_resolution=196).to(device) for _ in range(4)]
-        optims = [torch.optim.Adam(enc.parameters(), lr=1e-3) for enc in encoders]
+        optims = [torch.optim.Adam(enc.parameters(), lr=brats_encoder_lr) for enc in encoders]
         # for each image, learn encoder
         for imgid, image in enumerate(images):
             H, W, D = image.shape
@@ -124,14 +128,11 @@ def worker(fold_id, max_folds, experiment_names):
         for optim in optims:
             del optim
         embedding = torch.cat([enc.embeddings for enc in encoders], dim=1)  # [N, C]
+        print("Embedding abs mean stats: {}".format(embedding.abs().mean(0)))
         outpath = osp.join(OUT_DIR, q.split('/')[-1] + '.pth')
         torch.save(embedding, outpath)
         print("Saved to {}".format(outpath))
         gc.collect()
-        # now run inference on all experiment models
-        # with torch.no_grad():
-        #     xyz = torch.meshgrid(torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), torch.linspace(-1, 1, D), indexing='ij')
-        #     xyz = torch.stack(xyz, dim=-1).to(device)  # [H, W, D, 3]
 
 
 

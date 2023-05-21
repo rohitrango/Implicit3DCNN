@@ -11,7 +11,7 @@ class BRATS2021Dataset(Dataset):
     Images are of size (155, 240, 240)
     sample modes are 'random', 'full' (for random and full sampling of points), 
                     'randomseg', 'fullseg' (for random and full sampling of points and the segmentation mask)
-    multimodal: should we try to encode multimodal inputs
+    multimodal: should we try to encode multimodal inputs (if false, use `mlabel`th image )
     mlabel: if multimodal is false, which channels to use
     '''
     def __init__(self, root_dir, augment=True, sample='random', num_points=25000, multimodal=True, mlabel=0):
