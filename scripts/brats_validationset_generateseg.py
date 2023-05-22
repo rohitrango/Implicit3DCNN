@@ -72,9 +72,16 @@ def create_seg(fold_id, max_folds, experiment_names):
         for net in networks:
             allseg = allseg + torch.sigmoid(net(encoder, xyzflat).reshape(H, W, D, -1))[..., 1:]  # [H, W, D, C], discard the 0th index which is the background
         allseg = allseg / num_networks
-        print(allseg.min(), allseg.max())
+        # get source image
+        source_t1_file = glob(osp.join(ROOT_DIR, "*", enc.split("/")[-1].replace(".pth", "_t1.nii.gz")))[0]
+        source_file = nib.load(source_t1_file)
+        source_hdr = source_file.header.copy()
+        source_affine = source_file.affine.copy()
+        print("Loaded source header from {}".format(source_t1_file))
         # save it
-        nib.save(nib.Nifti1Image(allseg.cpu().numpy(), np.eye(4)), enc.replace(".pth", ".nii.gz"))
+        seg_img = nib.Nifti1Image(allseg.cpu().numpy(), source_affine, header=source_hdr)
+        nib.save(seg_img, enc.replace(".pth", ".nii.gz"))
+        # nib.save(nib.Nifti1Image(allseg.cpu().numpy(), np.eye(4)), enc.replace(".pth", ".nii.gz"))
         print("Saved segmentation to {}".format(enc.replace(".pth", ".nii.gz")))
 
 
