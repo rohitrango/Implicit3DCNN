@@ -33,8 +33,8 @@ def _to_cpu(state_dict):
 
 parser = argparse.ArgumentParser(description='Encode the BRATS dataset into our representation')
 parser.add_argument('--cfg_file', type=str, required=True)
-parser.add_argument('--root_dir', type=str, help='Path to the BRATS directory', default="/data/BRATS2021/training/")
-parser.add_argument('--output_dir', type=str, required=True, help='Path to the output directory', default="/data/Implicit3DCNNTasks/brats2021/")
+parser.add_argument('--root_dir', type=str, help='Path to the BRATS directory', default="/data/rohitrango/BRATS2021/training/")
+parser.add_argument('--output_dir', type=str, required=True, help='Path to the output directory', default="/data/rohitrango/Implicit3DCNNTasks/brats2021/")
 parser.add_argument('--skip_stage1', action='store_true', help='Skip stage 1 and load the decoder from the output directory')
 parser.add_argument('opts', default=None, nargs=argparse.REMAINDER)
 
@@ -52,7 +52,10 @@ if __name__ == '__main__':
         exit(0)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    dataset = BRATS2021Dataset(root_dir=args.root_dir, augment=False, num_points=cfg.ENCODE.NUM_POINTS, multimodal=cfg.ENCODE.MULTIMODAL, mlabel=cfg.ENCODE.MLABEL)
+    dataset = BRATS2021Dataset(root_dir=args.root_dir, augment=False, num_points=cfg.ENCODE.NUM_POINTS, multimodal=cfg.ENCODE.MULTIMODAL, mlabel=cfg.ENCODE.MLABEL,
+                                winsorize=cfg.ENCODE.WINSORIZE_PERCENTILE)
+    print(len(dataset))
+    # input("Press enter to continue")
     encoder = GridEncoder(level_dim=cfg.ENCODE.LEVEL_DIM, desired_resolution=cfg.ENCODE.DESIRED_RESOLUTION, gridtype='tiled', align_corners=True).cuda()
     encoder_params = []
     print(f"Using multimodal = {multimodal} with mlabel = {mlabel}")

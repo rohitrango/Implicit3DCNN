@@ -40,6 +40,7 @@ enc.SCORE_FN = "uniform"   # normalize using z-score or uniform
 # encoder parameters
 enc.LEVEL_DIM = 4
 enc.DESIRED_RESOLUTION = 196
+enc.WINSORIZE_PERCENTILE = 100.0  # 100.0 means no winsorization
 
 net = _C.NETWORK = CN()
 net.NAME = "AbstractContextResNet"

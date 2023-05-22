@@ -3,8 +3,11 @@ from torch.utils.data import Dataset
 from glob import glob
 from os import path as osp
 import nibabel as nib
+from torch.utils.data.dataset import ConcatDataset, Dataset
 from utils import z_score_normalize, uniform_normalize
 import numpy as np
+from typing import List
+import os
 
 class BRATS2021Dataset(Dataset):
     '''
@@ -14,9 +17,12 @@ class BRATS2021Dataset(Dataset):
     multimodal: should we try to encode multimodal inputs (if false, use `mlabel`th image )
     mlabel: if multimodal is false, which channels to use
     '''
-    def __init__(self, root_dir, augment=True, sample='random', num_points=25000, multimodal=True, mlabel=0):
+    def __init__(self, root_dir, augment=True, sample='random', num_points=25000, multimodal=True, mlabel=0, winsorize=100.0):
         super().__init__()
         self.root_dir = root_dir
+        self.winsorize = winsorize
+        if winsorize < 100:
+            print(f"Clamping images to {winsorize}th percentile")
         self.augment = augment
         self.sample = sample
         self.dirs = sorted(glob(osp.join(root_dir, 'BraTS2021_*')))
@@ -48,8 +54,9 @@ class BRATS2021Dataset(Dataset):
         # load image
         subj = self.dirs[index].split('/')[-1]
         images = [torch.from_numpy(nib.load(f).get_fdata()).float() for f in self.files[self.dirs[index]]]
+        if self.winsorize < 100.0:
+            images = [torch.clamp(img, 0, np.percentile(img, self.winsorize)) for img in images]
         images = [uniform_normalize(img) for img in images]
-        # images = [z_score_normalize(img) for img in images]
         H, W, D = images[0].shape
         seg = None
         # check for segmentation
@@ -177,12 +184,111 @@ class BRATS2021EncoderSegDataset(Dataset):
         return data
 
 
+class BRATS2021ImageTranslationDataset(Dataset):
+    ''' 
+    This dataset takes the directories to the images, and the encoded paths, along with the set of 
+    input modalities (can be a set), and the output modality (one modality only)
+
+    The input modalities are simply extracted from the multimodal encoding, and the output modality is given
+    as a pair of coordinates and the intensity values.     
+
+    image_dir: directory to the images
+    encoder_dir: directory to the encoders
+    input_modalities: list of modalities to use as input  (0-3)
+    output_modality: modality to use as output (0-3)
+    sample_mode: 'full' or 'sample' (sample randomly from output image)
+    winsorize: winsorize the output image to this percentile
+    maximum_intensity: maximum intensity of the output image
+    '''
+    def __init__(self, image_dir:str, encoder_dir:str, input_modalities: List[int] = [0], output_modality: int = 1,
+                 sample_mode: str = 'full', winsorize: float = 99.0, maximum_intensity = np.inf, num_samples: int = 100000) -> None:
+        super().__init__()
+        self.image_root_dir = image_dir
+        self.encoder_root_dir = encoder_dir
+        self.winsorize = winsorize
+        self.sample_mode = sample_mode
+        self.maximum_intensity = maximum_intensity
+        self.num_samples = num_samples
+        self.isfinite_max = np.isfinite(maximum_intensity)
+        if output_modality in input_modalities:
+            assert False, "Output modality cannot be in input modalities"
+        if len(input_modalities) == 0:
+            assert False, "Input modalities cannot be empty"
+        self.input_modalities = input_modalities
+        self.output_modality = output_modality
+        # get all directories containing the files
+        self.image_dirs = sorted(glob(os.path.join(image_dir, '*')))
+        self.encoded_files = sorted(glob(os.path.join(encoder_dir, 'encoder*')))
+        assert len(self.image_dirs) == len(self.encoded_files), "Number of images and encoders must be the same"
+    
+    def __len__(self,):
+        return len(self.image_dirs)
+    
+    def __getitem__(self, index):
+        # return self.encoded_files[index], self.image_dirs[index]
+        encoder = torch.load(self.encoded_files[index], map_location='cpu')['embeddings'] / 0.05
+        N, C = encoder.shape
+        Cby4 = C // 4
+        assert C % 4 == 0, "Number of channels must be a multiple of 4 (to extract each channel)"
+        # get the input modalities
+        inputs = [encoder[:, i*Cby4:(i+1)*Cby4] for i in self.input_modalities]
+        inputs = torch.cat(inputs, dim=1)  # [N, Cby4*len(input_modalities)]
+
+        out_image = sorted(glob(os.path.join(self.image_dirs[index], '*.nii.gz')))
+        out_image = list(filter(lambda x: 'seg' not in x, out_image))
+        assert len(out_image) == 4
+        out_image = out_image[self.output_modality]
+        out_image = torch.from_numpy(nib.load(out_image).get_fdata()).float()
+        if self.winsorize < 100.0:
+            out_image = torch.clamp(out_image, 0, np.percentile(out_image, self.winsorize))
+        if self.isfinite_max:
+            out_image[out_image > self.maximum_intensity] = self.maximum_intensity
+        out_image = uniform_normalize(out_image)
+        H, W, D = out_image.shape
+        # check sampling strategy
+        if self.sample_mode == 'full':
+            x, y, z = torch.meshgrid(torch.arange(H), torch.arange(W), torch.arange(D), indexing='ij')
+            x, y, z = x.reshape(-1), y.reshape(-1), z.reshape(-1)
+            imgpoints = out_image.reshape(-1)  # [H*W*D]
+        elif self.sample_mode == 'sample':
+            x, y, z = [torch.randint(0, dim, (self.num_samples,)) for dim in [H, W, D]]
+            imgpoints = out_image[x, y, z]
+        else:
+            raise NotImplementedError("Sampling mode not implemented")
+        # collate coordinates
+        x, y, z = [t.float()/(dim-1)*2.0 - 1 for t, dim in zip([x, y, z], [H, W, D])]  # [H*W*D]
+        xyz = torch.stack([x, y, z], dim=-1)  # [H*W*D, 3]
+        return {
+            'encoder': inputs, 
+            'image': imgpoints,
+            'xyz': xyz,
+            'image_name': self.image_dirs[index],
+            'encoder_name': self.encoded_files[index],
+            'index': index,
+        }
+
+
 if __name__ == '__main__':
-    ### Check for encoded dataset
-    dataset = BRATS2021EncoderSegDataset('/data/Implicit3DCNNTasks/brats2021_unimodal', '/data/BRATS2021/training/', val_fold=1)
+
+    ### Check for image translation dataset
+    dataset = BRATS2021ImageTranslationDataset("/data/rohitrango/BRATS2021/training", \
+                                               "/data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal", 
+                                                input_modalities=[0, 1], output_modality=2, sample_mode='sample')
     for i in range(5):
-        enc, seg = dataset.both_files[i]
-        print(enc, seg)
+        data = dataset[i]
+        for k, v in data.items():
+            if isinstance(v, torch.Tensor):
+                print(k, v.shape, v.min(0).values, v.max(0).values, v.abs().mean(0))
+            else:
+                print(k, v)
+        print()
+
+    ### Check for encoded dataset
+    # dataset = BRATS2021EncoderSegDataset('/data/Implicit3DCNNTasks/brats2021_unimodal', '/data/BRATS2021/training/', val_fold=1)
+    # for i in range(5):
+    #     enc, seg = dataset.both_files[i]
+    #     print(enc, seg)
+
     # print(len(dataset))
     # for idx in np.random.randint(len(dataset)//8, size=(20,)):
     #     datum = dataset[idx]

@@ -1,0 +1,8 @@
+# encode BRATS using single outputs (default)
+ENCODE:
+  MULTIMODAL: False
+  MLABEL: 0
+  WINSORIZE_PERCENTILE: 99.0
+  NUM_EPOCHS_STAGE1: 50
+  NUM_EPOCHS_STAGE2: 1000
+  LEVEL_DIM: 2
