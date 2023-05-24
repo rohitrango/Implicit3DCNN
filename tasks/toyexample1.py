@@ -15,15 +15,19 @@ import gridencoder as ge
 import torch
 from torch import nn
 from torch.nn import functional as F
-from src.conv3d import AbstractContextLayer, AbstractConv3D, HashRouterLayer
+from networks.conv3d import AbstractConv3D, HashRouterLayer
+from networks.contextlayer import AbstractContextLayer
+
+low_thr = 0.6
+hi_thr = 0.75
 
 class Resblock(nn.Module):
     def __init__(self, input_channels, output_channels, resolutions, offsets, log_hashmap_size, num_levels):
         super().__init__()
         self.conv1 = AbstractConv3D(input_channels, output_channels, resolutions, offsets, 3, True, num_levels=num_levels, log_hashmap_size=log_hashmap_size)
         self.conv2 = AbstractConv3D(output_channels, output_channels, resolutions, offsets, 3, True, num_levels=num_levels, log_hashmap_size=log_hashmap_size)
-        self.context = AbstractContextLayer(input_channels, output_channels, resolutions, offsets, affine=True, num_levels=num_levels, log_hashmap_size=log_hashmap_size)
-        # self.context = nn.Linear(input_channels, output_channels)
+        # self.context = AbstractContextLayer(input_channels, output_channels, resolutions, offsets, affine=True, num_levels=num_levels, log_hashmap_size=log_hashmap_size)
+        self.context = nn.Linear(input_channels, output_channels)
 
     def forward(self, inp):
         x = F.leaky_relu(self.conv1(inp))
@@ -31,7 +35,7 @@ class Resblock(nn.Module):
         x = x + self.context(inp)
         return x
 
-save_path = "/data/Implicit3DCNNTasks/toyexample1"
+save_path = "/data/rohitrango/Implicit3DCNNTasks/toyexample1"
 
 def generate_data(num_images=300):
     ''' Function to generate data '''
@@ -46,6 +50,9 @@ def generate_data(num_images=300):
         coord = np.random.randint(10, size=(3,))-5 + np.array([volume_size//4, volume_size//4, volume_size//4])
         if loc > 0:
             coord[loc-1] += volume_size//2
+        # flip with half probability
+        if np.random.rand() > 0.5:
+            coord = volume_size - coord
         # put the ball there
         x, y, z = coord
         volume[x, y, z] = (np.sqrt(2*np.pi)*sigma)**3
@@ -56,10 +63,9 @@ def generate_data(num_images=300):
             volume[x, y, z] = (np.sqrt(2*np.pi)*sigma)**3
         # smear the ball
         volume = gaussian_filter(volume, sigma=sigma).astype(np.float32)
+        volume[volume < low_thr] = 0
         # volume = volume / volume.max()
-        segm = (volume >= 0.5).astype(np.uint8)
-        if not mirror:
-            segm = segm*0
+        segm = (volume >= hi_thr).astype(np.uint8) * mirror
         # classification
         label = loc + 4*mirror
         # save them
@@ -214,8 +220,8 @@ def train_classifier(num_images=300, EPOCHS=100):
     # init network
     resolutions, offsets = encoder.resolutions, encoder.offsets
     net = []
-    net.append(Resblock(2, 4, resolutions, offsets, encoder.log2_hashmap_size, encoder.num_levels))
-    net.append(Resblock(4, 8, resolutions, offsets, encoder.log2_hashmap_size, encoder.num_levels))
+    net.append(Resblock(2, 8, resolutions, offsets, encoder.log2_hashmap_size, encoder.num_levels))
+    net.append(Resblock(8, 8, resolutions, offsets, encoder.log2_hashmap_size, encoder.num_levels))
     net.append(Resblock(8, 8, resolutions, offsets, encoder.log2_hashmap_size, encoder.num_levels))
     # net.append(Resblock(8, 8, resolutions, offsets, encoder.log2_hashmap_size, encoder.num_levels))
     net = nn.Sequential(*net).cuda()
@@ -232,7 +238,7 @@ def train_classifier(num_images=300, EPOCHS=100):
         x = classifier(x)
         return x
 
-    optim = torch.optim.Adam(list(net.parameters()) + list(classifier.parameters()), lr=1e-3, weight_decay=1e-5)
+    optim = torch.optim.Adam(list(net.parameters()) + list(classifier.parameters()), lr=5e-4, weight_decay=1e-6)
     # load all the encoded features
     for epoch in range(EPOCHS):
         pbar = tqdm(range(train_images))
@@ -268,12 +274,17 @@ def train_classifier(num_images=300, EPOCHS=100):
             val_accuracy.append((out.argmax(1) == label).float().mean().item())
         print("Epoch: {}, Average loss: {}, train accuracy: {:04f}, val accuracy: {:04f}".format(epoch, np.mean(losses), 100*np.mean(accuracy), 100*np.mean(val_accuracy)))
     
-def dice_loss(p, q):
+def dice_loss(p, q, val=False):
     # no batch, single image
-    # num = (2*(p*q).mean()) + 1e-4
-    # den = p.mean() + q.mean() + 1e-4
-    # return 1 - num/den
     return F.binary_cross_entropy_with_logits(p, q)
+    #p = torch.sigmoid(p) if not val else (p > 0).float()
+    #num = (2*(p*q).mean()) + 1e-4
+    #den = p.mean() + q.mean() + 1e-4
+
+    #if val:
+        #return num/den
+    #else:
+        #return 1 - num/den
 
 def train_segmentation(num_images=300, EPOCHS=100):
     encoder = ge.GridEncoder(desired_resolution=128, gridtype='tiled', align_corners=True, log2_hashmap_size=19).cuda()
@@ -296,8 +307,8 @@ def train_segmentation(num_images=300, EPOCHS=100):
     # init network
     resolutions, offsets = encoder.resolutions, encoder.offsets
     net = []
-    net.append(Resblock(2, 4, resolutions, offsets, encoder.log2_hashmap_size, encoder.num_levels))
-    net.append(Resblock(4, 8, resolutions, offsets, encoder.log2_hashmap_size, encoder.num_levels))
+    net.append(Resblock(2, 8, resolutions, offsets, encoder.log2_hashmap_size, encoder.num_levels))
+    net.append(Resblock(8, 8, resolutions, offsets, encoder.log2_hashmap_size, encoder.num_levels))
     net.append(Resblock(8, 8, resolutions, offsets, encoder.log2_hashmap_size, encoder.num_levels))
     net = nn.Sequential(*net).cuda()
     print(net)
@@ -324,7 +335,7 @@ def train_segmentation(num_images=300, EPOCHS=100):
                     inp = inp / 0.05
                     embed = net(inp) # [numembeddings, B, C]
                     out = decoder(xyz, embed)[..., 0, 0]  # [256, 256, 256, 1, 1]
-                    loss = dice_loss(out, seg)
+                    loss = dice_loss(out, seg, val=True)
                     val_loss.append(loss.item())
                     if vallabels[i] < 4:
                         vallowloss.append(loss.item())
@@ -345,7 +356,8 @@ def train_segmentation(num_images=300, EPOCHS=100):
             # forward pass
             embed = net(inp) # [numembeddings, B, C]
             out = decoder(xyz, embed)[..., 0, 0]  # [256, 256, 256, 1, 1]
-            loss = dice_loss(out, seg)
+            loss = F.binary_cross_entropy_with_logits(out, seg) # + 0.1*dice_loss(out, seg)
+            # loss = dice_loss(out, seg)
             # out = forward_pass(net, classifier, inp)
             # label = torch.tensor([trainlabels[i]]).cuda()
             # loss = F.cross_entropy(out, label)
@@ -379,7 +391,6 @@ def train_segmentation(num_images=300, EPOCHS=100):
         print("Epoch: {}, val. loss: {:04f}, val. low loss: {:04f}, val. high loss: {:04f}".format(epoch, np.mean(val_loss), np.mean(vallowloss), np.mean(valhighloss)))
         print()
 
-    
 
 if __name__ == '__main__':
     import argparse
@@ -391,12 +402,12 @@ if __name__ == '__main__':
         generate_data()
     elif args.mode == "learnfeatures":
         learn_features()
+    elif args.mode == 'learn_valfeatures':
+        learn_validation_features()
     elif args.mode == 'training_images_psnr':
         check_training_images()
     elif args.mode == 'val_images_psnr':
         check_training_images(train=False)
-    elif args.mode == 'learn_valfeatures':
-        learn_validation_features()
     elif args.mode == 'train_classifier':
         train_classifier()
     elif args.mode == "train_segmentation":
