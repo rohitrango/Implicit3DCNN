@@ -1,3 +1,0 @@
-TRAIN:
-  EPOCHS: 300
-  BASE_LR: 5e-4
