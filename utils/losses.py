@@ -65,3 +65,14 @@ def dice_score_binary(pred, gt):
     num = (2.0 * pred * gt).mean()
     den = (pred + gt + 1e-5).mean()
     return num/den
+
+def focal_loss_with_logits(logits, gt, gamma=2.0):
+    ''' 
+    given logits and ground truth, compute focal loss 
+    assumed no alpha
+    '''
+    p = torch.sigmoid(logits)
+    ce_term = F.binary_cross_entropy_with_logits(logits, gt, reduction='none')
+    p_t = p * gt + (1 - p) * (1 - gt)
+    loss = ce_term * ((1 - p_t)**gamma)
+    return loss.mean()

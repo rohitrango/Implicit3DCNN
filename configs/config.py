@@ -6,7 +6,9 @@ seg = _C.SEG = CN()  # segmentation config
 
 ## run segmentation config here
 seg.WEIGHT_DICE = 1.0
-seg.WEIGHT_CE = 0.2
+seg.WEIGHT_CE = 0.0
+seg.WEIGHT_FOCAL = 0.0
+seg.FOCAL_GAMMA = 2.0
 
 train = _C.TRAIN = CN()  # training config
 train.EPOCHS = 300
@@ -50,7 +52,7 @@ net.ACTIVATION = 'LeakyReLU'
 net.ACTIVATION_PARAM = 0.05
 net.INPUT_CHANNELS = 4
 net.OUTPUT_CHANNELS = 4
-
+net.USE_LAYERNORM = False
 
 def get_cfg_defaults():
     return _C.clone()

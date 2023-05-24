@@ -11,7 +11,7 @@ from gridencoder import GridEncoder
 from tqdm.auto import tqdm
 import numpy as np
 from torch.nn import functional as F
-from utils.losses import dice_loss_with_logits, dice_score_val, dice_loss_with_logits_batched, dice_score_binary
+from utils.losses import dice_loss_with_logits, dice_score_val, dice_loss_with_logits_batched, dice_score_binary, focal_loss_with_logits
 from utils.util import crop_collate_fn, format_raw_gt_to_brats
 import tensorboardX
 import os
@@ -202,6 +202,7 @@ if __name__ == '__main__':
     
     # extra loss config here
     use_ce_loss = cfg.SEG.WEIGHT_CE > 0
+    use_focal_loss = cfg.SEG.WEIGHT_FOCAL > 0
     # Eval in the beginning once
     # eval_validation_data(cfg, network, val_dataset, best_metrics=None, epoch=None, writer=writer, stop_at=400)
     # train
@@ -227,10 +228,14 @@ if __name__ == '__main__':
                 logits = logits.permute(1, 0, 2) # [B, N, out]
                 # check for what mode are we training in
                 ce_loss = torch.tensor(0, device=logits.device)
+                focal_loss = torch.tensor(0, device=logits.device)
+
                 if cfg.TRAIN.BRATS_SEGM_MODE == 'raw':
                     # check if we should use CE loss
                     if use_ce_loss:
                         ce_loss = F.cross_entropy(logits.permute(0, 2, 1), gt_segm.long()) 
+                    if use_focal_loss:
+                        raise NotImplementedError
                     dice_loss = dice_loss_with_logits_batched(logits, gt_segm, cfg.TRAIN.LOGIT_TRANSFORM, ignore_idx=0)
                 else:
                     gt_segm_bratsformat = format_raw_gt_to_brats(gt_segm)
@@ -241,14 +246,21 @@ if __name__ == '__main__':
                         for ce in ce_losses:
                             ce_loss += ce
                         ce_loss /= 3
+                    if use_focal_loss:
+                        focal_losses = [focal_loss_with_logits(logits[..., i+1], gt_segm_bratsformat[i], gamma=cfg.SEG.FOCAL_GAMMA) for i in range(3)]
+                        focal_loss = 0
+                        for focal in focal_losses:
+                            focal_loss += focal
+                        focal_loss /= 3
                     dice_loss = dice_loss_with_logits_batched(logits, gt_segm_bratsformat, 'sigmoid', ignore_idx=0)
 
-                loss = cfg.SEG.WEIGHT_DICE * dice_loss + cfg.SEG.WEIGHT_CE * ce_loss
+                loss = cfg.SEG.WEIGHT_DICE * dice_loss + cfg.SEG.WEIGHT_CE * ce_loss + cfg.SEG.WEIGHT_FOCAL * focal_loss
                 loss.backward()
                 optim.step()
-                perm.set_description(f'Epoch:{epoch} lr: {lr:.4f} Loss:{loss.item():.4f} CE:{ce_loss.item():.4f} Dice:{dice_loss.item():.4f}')
+                perm.set_description(f'Epoch:{epoch} lr: {lr:.4f} Loss:{loss.item():.4f} CE:{ce_loss.item():.4f} focal: {focal_loss.item():.4f} Dice:{dice_loss.item():.4f}')
                 writer.add_scalar('train/loss', loss.item(), epoch*len(train_dataloader)+i)
                 writer.add_scalar('train/ce_loss', ce_loss.item(), epoch*len(train_dataloader)+i)
+                writer.add_scalar('train/focal_loss', focal_loss.item(), epoch*len(train_dataloader)+i)
                 writer.add_scalar('train/dice_loss', dice_loss.item(), epoch*len(train_dataloader)+i)
         except KeyboardInterrupt:
             print(f"Skipping rest of training for epoch {epoch}.")

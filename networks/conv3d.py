@@ -28,7 +28,6 @@ class ConvCacheIndex:
             ConvCacheIndex.cache[key] = _backend.abstract_conv3d_cache_index(offsets, resolutions, num_levels, hashmap_size, K1, K2, K3)
         return ConvCacheIndex.cache[key]
 
-
 class _abstract_conv3d(Function):
     @staticmethod
     @custom_fwd

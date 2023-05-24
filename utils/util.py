@@ -40,10 +40,10 @@ def init_network(cfg, offsets, resolutions):
 
     if name == 'AbstractContextResNet':
         net = AbstractContextResNet(input_channels, output_channels, offsets, resolutions, blocks=cfgnet.BLOCK_CHANNELS, 
-                                    num_layers_per_block=cfgnet.BLOCK_NUM_LAYERS, activation=actv)
+                                    num_layers_per_block=cfgnet.BLOCK_NUM_LAYERS, activation=actv, layernorm=cfgnet.USE_LAYERNORM)
     elif name == 'AbstractResNet':
         net = AbstractResNet(input_channels, output_channels, offsets, resolutions, cfgnet.BLOCK_CHANNELS,
-                             num_layers_per_block=cfgnet.BLOCK_NUM_LAYERS, activation=actv)
+                             num_layers_per_block=cfgnet.BLOCK_NUM_LAYERS, activation=actv, layernorm=cfgnet.USE_LAYERNORM)
     elif name == "ConvBlocks":
         net = ConvBlocks(input_channels, output_channels, offsets, resolutions, cfgnet.BLOCK_CHANNELS,
                          activation=actv)
