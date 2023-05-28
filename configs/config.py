@@ -37,6 +37,9 @@ dataset.VAL_ENCODED_DIR = '/data/rohitrango/Implicit3DCNNTasks/brats2021_unimoda
 dataset.VAL_SEG_DIR = '/data/rohitrango/BRATS2021/val/'
 dataset.SCALE_RANGE = 0.2
 
+dataset.INPUT_MODALITIES = []   # flair, t1, t1ce, t2
+dataset.OUTPUT_MODALITY = 1
+
 ## encoder parameters
 enc = _C.ENCODE = CN()
 enc.MULTIMODAL = True

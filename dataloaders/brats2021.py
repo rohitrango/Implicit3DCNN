@@ -209,7 +209,7 @@ class BRATS2021ImageTranslationDataset(Dataset):
     winsorize: winsorize the output image to this percentile
     maximum_intensity: maximum intensity of the output image
     '''
-    def __init__(self, image_dir:str, encoder_dir:str, input_modalities: List[int] = [0], output_modality: int = 1,
+    def __init__(self, image_dir:str, encoder_dir:str, input_modalities: List[int] = [], output_modality: int = 1,
                  sample_mode: str = 'full', winsorize: float = 100.0, maximum_intensity = np.inf, num_samples: int = 100000) -> None:
         super().__init__()
         self.image_root_dir = image_dir
@@ -235,13 +235,14 @@ class BRATS2021ImageTranslationDataset(Dataset):
     
     def __getitem__(self, index):
         # return self.encoded_files[index], self.image_dirs[index]
-        encoder = torch.load(self.encoded_files[index], map_location='cpu')['embeddings'] / 0.05
+        encoder = torch.load(self.encoded_files[index], map_location='cpu')['embeddings']
         N, C = encoder.shape
         Cby4 = C // 4
         assert C % 4 == 0, "Number of channels must be a multiple of 4 (to extract each channel)"
         # get the input modalities
         inputs = [encoder[:, i*Cby4:(i+1)*Cby4] for i in self.input_modalities]
         inputs = torch.cat(inputs, dim=1)  # [N, Cby4*len(input_modalities)]
+        inputs = inputs / 0.05
 
         out_image = sorted(glob(os.path.join(self.image_dirs[index], '*.nii.gz')))
         out_image = list(filter(lambda x: 'seg' not in x, out_image))
@@ -265,12 +266,13 @@ class BRATS2021ImageTranslationDataset(Dataset):
         else:
             raise NotImplementedError("Sampling mode not implemented")
         # collate coordinates
-        x, y, z = [t.float()/(dim-1)*2.0 - 1 for t, dim in zip([x, y, z], [H, W, D])]  # [H*W*D]
-        xyz = torch.stack([x, y, z], dim=-1)  # [H*W*D, 3]
+        # x, y, z = [t.float()/(dim-1)*2.0 - 1 for t, dim in zip([x, y, z], [H, W, D])]  # [H*W*D]
+        xyz = 1.0*torch.stack([x, y, z], dim=-1)  # [H*W*D, 3]
         return {
             'encoder': inputs, 
             'image': imgpoints,
             'xyz': xyz,
+            'dims': torch.tensor([H, W, D]).float(),
             'image_name': self.image_dirs[index],
             'encoder_name': self.encoded_files[index],
             'index': index,

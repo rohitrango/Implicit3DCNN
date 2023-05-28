@@ -86,3 +86,21 @@ def format_raw_gt_to_brats(segm):
     tc = et + (segm == 1)
     wt = tc + (segm == 2)
     return et, tc, wt
+
+def split_dataset(dataset, fold, max_folds, shuffle_seed):
+    ''' split the dataset given by fold/max_folds and a seed to shuffle '''
+    num_items = len(dataset)
+    if shuffle_seed:
+        rng = np.random.RandomState(shuffle_seed)
+        indices = rng.permutation(num_items)
+    else:
+        indices = np.arange(num_items)
+    # split the dataset
+    splits = np.array_split(indices, max_folds)
+    train_split, val_split = [], []
+    for f in range(max_folds):
+        if f == fold:
+            val_split = splits[f]
+        else:
+            train_split.extend(splits[f])
+    return torch.utils.data.Subset(dataset, train_split), torch.utils.data.Subset(dataset, val_split)
