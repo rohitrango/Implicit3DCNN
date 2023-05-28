@@ -23,12 +23,19 @@ train.OPTIMIZER = 'adam'
 
 val = _C.VAL = CN()  # validation config
 val.FOLD = 0        
+val.MAX_FOLDS = 5   #
+val.RANDOM_SHUFFLE = False
+val.RANDOM_SHUFFLE_SEED = 498534  # scribbed away the keyboard for luck
 val.EVAL_EVERY = 1
 val.STOP_AT = 400
 
 dataset = _C.DATASET = CN()  # dataset config
-dataset.TRAIN_ENCODED_DIR = '/data/rohitrango/Implicit3DCNNTasks/brats2021/'
+dataset.TRAIN_ENCODED_DIR = '/data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal/'
 dataset.TRAIN_SEG_DIR = '/data/rohitrango/BRATS2021/training/'
+
+dataset.VAL_ENCODED_DIR = '/data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal_val/'
+dataset.VAL_SEG_DIR = '/data/rohitrango/BRATS2021/val/'
+dataset.SCALE_RANGE = 0.2
 
 ## encoder parameters
 enc = _C.ENCODE = CN()

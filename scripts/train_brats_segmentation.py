@@ -164,8 +164,13 @@ if __name__ == '__main__':
     writer = tensorboardX.SummaryWriter(log_dir='experiments/' + args.exp_name)
 
     # set up datasets
-    train_dataset = BRATS2021EncoderSegDataset(cfg.DATASET.TRAIN_ENCODED_DIR, cfg.DATASET.TRAIN_SEG_DIR, train=True, val_fold=cfg.VAL.FOLD)
-    val_dataset   = BRATS2021EncoderSegDataset(cfg.DATASET.TRAIN_ENCODED_DIR, cfg.DATASET.TRAIN_SEG_DIR, train=False, val_fold=cfg.VAL.FOLD)
+    shuffle_seed = cfg.VAL.RANDOM_SHUFFLE_SEED if cfg.VAL.RANDOM_SHUFFLE else None 
+    train_dataset = BRATS2021EncoderSegDataset(cfg.DATASET.TRAIN_ENCODED_DIR, cfg.DATASET.TRAIN_SEG_DIR, train=True, \
+                                               val_fold=cfg.VAL.FOLD, num_folds=cfg.VAL.MAX_FOLDS, \
+                                                scale_range=cfg.DATASET.SCALE_RANGE, shuffle_seed=shuffle_seed)
+    val_dataset   = BRATS2021EncoderSegDataset(cfg.DATASET.TRAIN_ENCODED_DIR, cfg.DATASET.TRAIN_SEG_DIR, train=False, \
+                                               val_fold=cfg.VAL.FOLD, scale_range=cfg.DATASET.SCALE_RANGE, \
+                                                num_folds=cfg.VAL.MAX_FOLDS, shuffle_seed=shuffle_seed)
 
     train_dataloader = DataLoader(train_dataset, batch_size=cfg.TRAIN.BATCH_SIZE, shuffle=True, num_workers=cfg.TRAIN.NUM_WORKERS, 
                                   pin_memory=True)

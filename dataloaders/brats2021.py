@@ -113,15 +113,24 @@ class BRATS2021Dataset(Dataset):
 
 class BRATS2021EncoderSegDataset(Dataset):
     ''' Dataset for loading the encoded features, coordinates and segmentation '''
-    def __init__(self, encoded_root_dir, seg_root_dir, train=True, num_folds=5, val_fold=0):
+    def __init__(self, encoded_root_dir, seg_root_dir, train=True, num_folds=5, val_fold=0, shuffle_seed=None, scale_range=0.2):
         super().__init__()
         self.train = train
         self.encoded_root_dir = encoded_root_dir
         self.seg_root_dir = seg_root_dir
+        self.scale_range = scale_range
         # get all the encoders and segmentations  
         # (sorting should be consistent because we use the same naming convention for encoders and original segmentations)
         encoded_files = sorted(glob(osp.join(encoded_root_dir, 'encoder*.pth')))
         segm_files = sorted(glob(osp.join(seg_root_dir, '*/*seg*nii.gz')))
+        # shuffle seed
+        if shuffle_seed:
+            print("Using random seed {}".format(shuffle_seed))
+            rng = np.random.RandomState(shuffle_seed)
+            perm = rng.permutation(len(encoded_files))
+            encoded_files = [encoded_files[i] for i in perm]
+            segm_files = [segm_files[i] for i in perm]
+
         assert len(encoded_files) == len(segm_files)
         # zip both files and split into folds
         both_files = list(zip(encoded_files, segm_files))
@@ -154,7 +163,7 @@ class BRATS2021EncoderSegDataset(Dataset):
         data['embeddings'] = data['embeddings'][:, None]   # [N, 1, C]
         data['embeddings'] /= 0.05
         if self.train:
-            scale = np.random.rand()*0.4 + 0.8
+            scale = np.random.rand()*self.scale_range*2 + (1 - self.scale_range)
             data['embeddings'] = data['embeddings'] * scale  # scale augmentation
         # load segmentation
         seg = torch.from_numpy(nib.load(segmfile).get_fdata()).int() 
@@ -201,7 +210,7 @@ class BRATS2021ImageTranslationDataset(Dataset):
     maximum_intensity: maximum intensity of the output image
     '''
     def __init__(self, image_dir:str, encoder_dir:str, input_modalities: List[int] = [0], output_modality: int = 1,
-                 sample_mode: str = 'full', winsorize: float = 99.0, maximum_intensity = np.inf, num_samples: int = 100000) -> None:
+                 sample_mode: str = 'full', winsorize: float = 100.0, maximum_intensity = np.inf, num_samples: int = 100000) -> None:
         super().__init__()
         self.image_root_dir = image_dir
         self.encoder_root_dir = encoder_dir
