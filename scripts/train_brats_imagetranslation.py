@@ -137,7 +137,6 @@ if __name__ == '__main__':
             with torch.no_grad():
                 pbar = tqdm(val_dataloader)
                 for i, datum in enumerate(pbar):
-                    optim.zero_grad()
                     # get data
                     embed = datum['encoder'].cuda() # [B, N, C]
                     embed = embed.squeeze(2).permute(1, 0, 2).contiguous()  # [N, B, C]
@@ -150,8 +149,6 @@ if __name__ == '__main__':
                     preds = preds.permute(1, 0, 2).squeeze(2) # [B, N, out]
                     loss = F.mse_loss(preds, gt_img)
                     psnr = 10 * torch.log10(4 / loss)  # image range is from -1 to 1
-                    loss.backward()
-                    optim.step()
                     pbar.set_description(f'Epoch:{epoch} lr: {lr:.4f} Loss:{loss.item():.4f}, PSNR:{psnr.item():.4f}')
                     total_psnr.append(psnr.item())
                     total_loss.append(loss.item())
