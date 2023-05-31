@@ -12,6 +12,9 @@ import time
 from tqdm import tqdm
 import numpy as np
 
+def is_power_of_two(n: int):
+    return (n & (n - 1) == 0) and n != 0
+
 # Create cache function
 class ConvCacheIndex:
     # classwide cache 
@@ -176,9 +179,17 @@ class AbstractConv3D(nn.Module):
 
     def forward(self, input):
         ''' forward pass 
-        input: (B, N, C_in)
+        input: (N, B, C_in)
         '''
-        return abstractConv3DFunction(input, self.offsets, self.resolutions, self.weight, self.bias, self.num_levels, self.hashmap_size, self.cache_index)
+        padding = 0
+        N, batch_size, channels = input.shape
+        if not is_power_of_two(batch_size):
+            padding = 2**int(np.ceil(np.log2(batch_size))) - batch_size
+            input = torch.cat([input, torch.zeros((N, padding, channels), device=input.device, dtype=input.dtype)], dim=1)
+        out = abstractConv3DFunction(input, self.offsets, self.resolutions, self.weight, self.bias, self.num_levels, self.hashmap_size, self.cache_index)
+        if padding > 0:
+            out = out[:, :-padding]
+        return out
 
 ## Check this
 if __name__ == '__main__':
@@ -247,7 +258,7 @@ if __name__ == '__main__':
     # # compute time
     # embed = embed.expand(-1, 32, -1).contiguous()
     # embed = embed.expand(-1, 4, 4).contiguous().detach()
-    embed = embed.repeat(1, 4, 1).contiguous().detach()
+    embed = embed.repeat(1, 3, 1).contiguous().detach()
     embed.requires_grad = True
     output = layer(embed)
     a = time.time()

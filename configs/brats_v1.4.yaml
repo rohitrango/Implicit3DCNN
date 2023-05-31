@@ -1,13 +1,13 @@
 ## version 1.4 has same architecture as v1.3, but 
 ##   * layernorm is ON by default,
 ##   * shuffle_seed is True
-##   * scale-range is 0.1 from 0.2
-##   * 4-fold cross validation   (val-4 always causes some problems)
+##   * [NO] scale-range is 0.1 from 0.2  
+##   * [NO] 4-fold cross validation  (val-4 always causes some problems)
 ##   * focal_loss is set to 0.25 (by default instead of ablating in v1.3)
 DATASET:
   TRAIN_ENCODED_DIR: /data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal
   TRAIN_SEG_DIR: /data/rohitrango/BRATS2021/training/
-  SCALE_RANGE: 0.1
+  SCALE_RANGE: 0.2
 SEG:
   WEIGHT_FOCAL: 0.25
 NETWORK:
@@ -40,6 +40,6 @@ TRAIN:
 VAL:
   EVAL_EVERY: 2
   FOLD: 0
-  MAX_FOLDS: 4
+  MAX_FOLDS: 5
   STOP_AT: 10000
   RANDOM_SHUFFLE: True
