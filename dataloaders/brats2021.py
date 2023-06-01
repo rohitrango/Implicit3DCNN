@@ -6,7 +6,7 @@ import nibabel as nib
 from torch.utils.data.dataset import ConcatDataset, Dataset
 from utils import z_score_normalize, uniform_normalize
 import numpy as np
-from typing import List
+from typing import Any, List
 import os
 
 class BRATS2021Dataset(Dataset):
@@ -113,7 +113,8 @@ class BRATS2021Dataset(Dataset):
 
 class BRATS2021EncoderSegDataset(Dataset):
     ''' Dataset for loading the encoded features, coordinates and segmentation '''
-    def __init__(self, encoded_root_dir, seg_root_dir, train=True, num_folds=5, val_fold=0, shuffle_seed=None, scale_range=0.2):
+    def __init__(self, encoded_root_dir, seg_root_dir, train=True, num_folds=5, val_fold=0, shuffle_seed=None, scale_range=0.2, 
+                include_image_volumes=False):
         super().__init__()
         self.train = train
         self.encoded_root_dir = encoded_root_dir
@@ -123,6 +124,14 @@ class BRATS2021EncoderSegDataset(Dataset):
         # (sorting should be consistent because we use the same naming convention for encoders and original segmentations)
         encoded_files = sorted(glob(osp.join(encoded_root_dir, 'encoder*.pth')))
         segm_files = sorted(glob(osp.join(seg_root_dir, '*/*seg*nii.gz')))
+        other_files = [None]*len(segm_files)
+        if include_image_volumes:
+            flair = sorted(glob(osp.join(seg_root_dir, '*/*flair.nii.gz')))
+            t1    = sorted(glob(osp.join(seg_root_dir, '*/*t1.nii.gz')))
+            t1ce  = sorted(glob(osp.join(seg_root_dir, '*/*t1ce.nii.gz')))
+            t2   = sorted(glob(osp.join(seg_root_dir, '*/*t2.nii.gz')))
+            other_files = list(zip(flair, t1, t1ce, t2))
+
         # shuffle seed
         if shuffle_seed:
             print("Using random seed {}".format(shuffle_seed))
@@ -130,10 +139,11 @@ class BRATS2021EncoderSegDataset(Dataset):
             perm = rng.permutation(len(encoded_files))
             encoded_files = [encoded_files[i] for i in perm]
             segm_files = [segm_files[i] for i in perm]
+            other_files = [other_files[i] for i in perm]
 
-        assert len(encoded_files) == len(segm_files)
+        assert len(encoded_files) == len(segm_files) == len(other_files)
         # zip both files and split into folds
-        both_files = list(zip(encoded_files, segm_files))
+        both_files = list(zip(encoded_files, segm_files, other_files))
         N = len(both_files)
         # discard the val fold if train, else keep only the val fold
         both_files_split = np.array_split(both_files, num_folds)
@@ -143,11 +153,11 @@ class BRATS2021EncoderSegDataset(Dataset):
         else:
             both_files_split = [item for item in both_files_split[val_fold]]
         # save it to files, and initialize weights
-        self.both_files = both_files_split
+        self.all_files = both_files_split
         self.ce_weights = dict()
     
     def __len__(self):
-        return len(self.both_files) * (1 if self.train else 8)   # divide it into 8 chunks of subsampled points for test, for training, select a random chunk
+        return len(self.all_files) * (1 if (self.train) else 8)   # divide it into 8 chunks of subsampled points for test, for training, select a random chunk
 
     def __getitem__(self, index):
         # get chunk and index size
@@ -158,7 +168,7 @@ class BRATS2021EncoderSegDataset(Dataset):
             index = index // 8
         startx, starty, startz = (chunk // 4), ((chunk // 2) % 2), (chunk % 2)
         # get encoder and segmentation
-        encoderfile, segmfile = self.both_files[index]
+        encoderfile, segmfile, otherfiles = self.all_files[index]
         data = dict(torch.load(encoderfile, map_location='cpu'))
         data['embeddings'] = data['embeddings'][:, None]   # [N, 1, C]
         data['embeddings'] /= 0.05
@@ -191,6 +201,41 @@ class BRATS2021EncoderSegDataset(Dataset):
         data['segm'] = seg.reshape(-1)
         data['weights'] = weights
         return data
+
+
+class BRATSFinetuneDataset(BRATS2021EncoderSegDataset):
+    ''' very similar to EncoderSegDataset
+
+    The only difference is that it returns the image volumes, and there is no subsampling, etc.
+    '''
+    def __init__(self, *args, **kwargs):
+        if kwargs.get('include_image_volumes'):
+            del kwargs['include_image_volumes']
+        super().__init__(*args, **kwargs, include_image_volumes=True)
+    
+    def __len__(self):
+        return len(self.all_files)
+    
+    def __getitem__(self, index): 
+        # get all the files
+        encoderfile, segmfile, otherfiles = self.all_files[index]
+        # get encoder
+        data = dict(torch.load(encoderfile, map_location='cpu'))
+        data['embeddings'] = data['embeddings'][:, None]   # [N, 1, C]
+        data['embeddings'] /= 0.05
+        # get segmentation
+        seg = torch.from_numpy(nib.load(segmfile).get_fdata()).int() 
+        seg[seg == 4] = 3
+        H, W, D = seg.shape
+        # get final images
+        images = [torch.from_numpy(nib.load(f).get_fdata()).float() for f in otherfiles]
+        images = [uniform_normalize(img) for img in images]
+        images = torch.stack(images, dim=0)  # [4, H, W, D]
+        return {
+            'images': images,
+            'seg'   : seg,
+            'embeddings': data['embeddings']
+        }
 
 
 class BRATS2021ImageTranslationDataset(Dataset):
@@ -240,6 +285,8 @@ class BRATS2021ImageTranslationDataset(Dataset):
         Cby4 = C // 4
         assert C % 4 == 0, "Number of channels must be a multiple of 4 (to extract each channel)"
         # get the input modalities
+        # print(encoder.shape, Cby4, self.input_modalities)
+        # print([(i*Cby4, (i+1)*Cby4) for i in self.input_modalities])
         inputs = [encoder[:, i*Cby4:(i+1)*Cby4] for i in self.input_modalities]
         inputs = torch.cat(inputs, dim=1)  # [N, Cby4*len(input_modalities)]
         inputs = inputs / 0.05
@@ -284,9 +331,15 @@ if __name__ == '__main__':
     ### Check for image translation dataset
     dataset = BRATS2021ImageTranslationDataset("/data/rohitrango/BRATS2021/training", \
                                                "/data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal", 
-                                                input_modalities=[0, 1], output_modality=2, sample_mode='sample')
+                                                input_modalities=[1, 3], output_modality=0, sample_mode='sample')
     for i in range(5):
         data = dataset[i]
+        # out image
+        out_image = sorted(glob(os.path.join(dataset.image_dirs[i], '*.nii.gz')))
+        out_image = list(filter(lambda x: 'seg' not in x, out_image))
+        print(out_image[dataset.output_modality])
+        print(out_image)
+
         for k, v in data.items():
             if isinstance(v, torch.Tensor):
                 print(k, v.shape, v.min(0).values, v.max(0).values, v.abs().mean(0))
@@ -295,6 +348,14 @@ if __name__ == '__main__':
         print()
 
     ### Check for encoded dataset
+    # dataset = BRATSFinetuneDataset('/data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal', '/data/rohitrango/BRATS2021/training/', val_fold=1)
+    # for i in range(5):
+    #     datum = dataset[np.random.randint(len(dataset))]
+    #     for k, v in datum.items():
+    #         print(k, v.shape)
+        # enc, seg, others = dataset.all_files[i]
+        # print(enc, seg, others)
+
     # dataset = BRATS2021EncoderSegDataset('/data/Implicit3DCNNTasks/brats2021_unimodal', '/data/BRATS2021/training/', val_fold=1)
     # for i in range(5):
     #     enc, seg = dataset.both_files[i]

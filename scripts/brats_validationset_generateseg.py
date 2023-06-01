@@ -84,7 +84,6 @@ def create_seg(fold_id, max_folds, experiment_names):
         # nib.save(nib.Nifti1Image(allseg.cpu().numpy(), np.eye(4)), enc.replace(".pth", ".nii.gz"))
         print("Saved segmentation to {}".format(enc.replace(".pth", ".nii.gz")))
 
-
 def worker(fold_id, max_folds, experiment_names):
     '''
     Given a fold id and max folds, split the work, load the unimodal decoders (hardcoded paths) 
@@ -140,7 +139,6 @@ def worker(fold_id, max_folds, experiment_names):
         torch.save(embedding, outpath)
         print("Saved to {}".format(outpath))
         gc.collect()
-
 
 
 if __name__ == '__main__':
