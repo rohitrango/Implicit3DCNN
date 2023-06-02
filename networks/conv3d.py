@@ -41,8 +41,11 @@ class _abstract_conv3d(Function):
         :weight: [num_levels, kernel_size, kernel_size, kernel_size, channels_in, channels_out]
         :bias: [num_levels, channels_out]
         '''
-        ctx.save_for_backward(input, offsets, resolutions, weight, bias, torch.tensor(num_levels), torch.tensor(hashmap_size), \
-                              torch.tensor(input.requires_grad), torch.tensor(cache_index))
+        # save backward context only if needed
+        if input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad):
+            ctx.save_for_backward(input, offsets, resolutions, weight, bias, torch.tensor(num_levels), torch.tensor(hashmap_size), \
+                                torch.tensor(input.requires_grad), torch.tensor(cache_index))
+
         batch_size, num_embedding = input.shape[:2]
         channels_out = weight.shape[-1]
         output = torch.zeros((batch_size, num_embedding, channels_out), device=input.device, dtype=input.dtype)

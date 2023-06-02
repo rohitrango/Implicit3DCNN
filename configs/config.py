@@ -64,5 +64,14 @@ net.INPUT_CHANNELS = 4
 net.OUTPUT_CHANNELS = 4
 net.USE_LAYERNORM = False
 
+# finetuning
+ft = _C.FINETUNE = CN()
+ft.IS_3D = False
+ft.NUM_EPOCHS = 10
+ft.PATCH_SIZE = 128
+ft.LR = 2e-4
+ft.ADD_RESIDUAL_END = True
+
+
 def get_cfg_defaults():
     return _C.clone()

@@ -646,8 +646,8 @@ class AbstractUNet(nn.Module):
 
         # apply final_activation (i.e. Sigmoid or Softmax) only during prediction.
         # During training the network outputs logits
-        if not self.training and self.final_activation is not None:
-            x = self.final_activation(x)
+        # if not self.training and self.final_activation is not None:
+        #     x = self.final_activation(x)
 
         return x
 
