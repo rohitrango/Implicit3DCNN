@@ -23,7 +23,7 @@ import nibabel as nib
 def eval_validation_data(cfg, network, optim, val_dataset, best_metrics=None, epoch=None, writer=None, stop_at=None, tta=False, tta_samples=10,
                             save_preds=False, save_dir="./valcheck"):
     '''
-    Check for validation performance here
+    Check for validation split performance here
     '''
     names = ['whole_tumor', 'tumor_core', 'enhancing_tumor']
     if tta:
@@ -162,7 +162,6 @@ if __name__ == '__main__':
         print("Starting new experiment...")
 
     writer = tensorboardX.SummaryWriter(log_dir='experiments/' + args.exp_name)
-
     # set up datasets
     shuffle_seed = cfg.VAL.RANDOM_SHUFFLE_SEED if cfg.VAL.RANDOM_SHUFFLE else None 
     train_dataset = BRATS2021EncoderSegDataset(cfg.DATASET.TRAIN_ENCODED_DIR, cfg.DATASET.TRAIN_SEG_DIR, train=True, \

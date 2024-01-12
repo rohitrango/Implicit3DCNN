@@ -58,33 +58,35 @@ def eval_validation_data_finetune(encoder_net, unet_model, val_dataset, patch_in
             coarse_patch = seg_coarse_p[:, hs:hs+patch_size, ws:ws+patch_size, ds:ds+patch_size]
             input_patch = torch.cat([imagepatch, coarse_patch], dim=0)[None] # [1, 7, H, W, D]
             # get output logits
-            # out_logit = unet_model(input_patch) + 0.1*seg_coarse_logits[None, :, hs:hs+patch_size, ws:ws+patch_size, ds:ds+patch_size] # [1, 3, P, P, P]
+            out_logit = unet_model(input_patch)
             if cfg.FINETUNE.ADD_RESIDUAL_END:
-                out_logit = unet_model(input_patch) + 0.1*seg_coarse_logits[None, :, hs:hs+patch_size, ws:ws+patch_size, ds:ds+patch_size] # [1, 3, P, P, P]
-            else:
-                out_logit = unet_model(input_patch)
+                out_logit = out_logit + seg_coarse_logits[None, :, hs:hs+patch_size, ws:ws+patch_size, ds:ds+patch_size] # [1, 3, P, P, P]
+            # out_logit = seg_coarse_logits[None, :, hs:hs+patch_size, ws:ws+patch_size, ds:ds+patch_size]
             # loss
             out_patch = torch.sigmoid(out_logit)
             outputs_collated[:, hs:hs+patch_size, ws:ws+patch_size, ds:ds+patch_size] += out_patch[0]
             count_collated[:, hs:hs+patch_size, ws:ws+patch_size, ds:ds+patch_size] += 1
         # get average
         outputs_collated /= count_collated
+        # print(outputs_collated.min(), outputs_collated.max())
+        # print(count_collated.min(), count_collated.max())
         outputs_collated = (outputs_collated >= 0.5).float()
         # get dice scores
         for i in range(3):
-            dice_scores[i].append(dice_score_binary(outputs_collated[i], seg_gt[i]))
+            dice_scores[i].append(dice_score_binary(outputs_collated[i], seg_gt[i]).item())
+        pbar.set_description(", ".join([str(x[-1]) for x in dice_scores]))
     # print mean dice scores
     is_best = False
-    dice_scores = [torch.stack(x).mean().item() for x in dice_scores]
+    #dice_scores = [torch.stack(x).mean().item() for x in dice_scores]
+    dice_scores = [np.mean(x) for x in dice_scores]
     dice_score = np.mean(dice_scores)
     best_dice_so_far = best_metrics.get('dice', 0)
-    print("Mean dice score for epoch {}: {}".format(epoch, dice_score))
+    print("Mean dice score for epoch {}: {}".format(epoch, dice_scores))
     if dice_score > best_dice_so_far:
         best_metrics['dice'] = np.mean(dice_scores)
         is_best = True
     writer.add_scalar('val/dice', dice_score, epoch)
     return is_best
-
 
 def train_finetune_net(unet_model, encoder_net, train_dataset, val_dataset, cfg):
     '''
@@ -101,7 +103,7 @@ def train_finetune_net(unet_model, encoder_net, train_dataset, val_dataset, cfg)
     # set up coordinates, optimizer, scheduler
     coords = torch.meshgrid(torch.linspace(-1, 1, 240), torch.linspace(-1, 1, 240), torch.linspace(-1, 1, 155), indexing='ij')
     coords = torch.stack(coords, dim=-1).cuda().reshape(-1, 3)[:, None].contiguous()  # [N, 1, 3]
-    optim = torch.optim.Adam(unet_model.parameters(), lr=cfg.FINETUNE.LR)
+    optim = torch.optim.Adam(unet_model.parameters(), lr=cfg.FINETUNE.LR, weight_decay=1e-6)
     lr_scheduler = torch.optim.lr_scheduler.PolynomialLR(optim, num_epochs, 0.9)
     patch_indices = generate_patch_indices(240, 240, 155, patch_size)
     # train
@@ -141,14 +143,15 @@ def train_finetune_net(unet_model, encoder_net, train_dataset, val_dataset, cfg)
                         seg_gt_patch = torch.flip(seg_gt_patch, dims=dims)
                         seg_idx_patch = torch.flip(seg_idx_patch, dims=[x-1 for x in dims])
                     # get output logits
+                    out_logit = unet_model(input_patch)
                     if cfg.FINETUNE.ADD_RESIDUAL_END:
-                        out_logit = unet_model(input_patch) + 0.1*seg_coarse_logits[None, :, hs:hs+patch_size, ws:ws+patch_size, ds:ds+patch_size] # [1, 3, P, P, P]
-                    else:
-                        out_logit = unet_model(input_patch)
+                        out_logit = out_logit + seg_coarse_logits[None, :, hs:hs+patch_size, ws:ws+patch_size, ds:ds+patch_size] # [1, 3, P, P, P]
                     # loss
                     focal_loss = focal_loss_with_logits(out_logit, seg_gt_patch, gamma=cfg.SEG.FOCAL_GAMMA)
                     dice_loss = dice_loss_with_logits_batched(out_logit.reshape(1, 3, -1).permute(0, 2, 1), seg_idx_patch.reshape(1, -1), 'sigmoid', ignore_idx=-1)
-                    loss = dice_loss + cfg.SEG.WEIGHT_FOCAL * focal_loss
+                    loss = dice_loss + 0
+                    if cfg.SEG.WEIGHT_FOCAL > 0:
+                        loss += cfg.SEG.WEIGHT_FOCAL * focal_loss
                     loss.backward()
                     optim.step()
                     pbar.set_description(f"Epoch {epoch}, Loss: {loss.item():.4f}, Dice: {1-dice_loss.item():.4f}, Focal: {focal_loss.item():.4f}")
@@ -194,7 +197,7 @@ if __name__ == '__main__':
     cfg.merge_from_list(args.opts)
     print(cfg)
 
-    with open(osp.join(exp_path, 'config_finetune.yaml'), 'r') as f:
+    with open(osp.join(exp_path, 'config_finetune.yaml'), 'w') as f:
         f.write(cfg.dump())
 
     # load network
@@ -219,7 +222,7 @@ if __name__ == '__main__':
                                                 num_folds=cfg.VAL.MAX_FOLDS, shuffle_seed=shuffle_seed)
     # ignoring the `is_3d` flag for this network
     # initialize unet (4 image channels + 3 segmentation channels)
-    unet_model = ResidualUNet3D(4+3, 3, num_groups=2, num_levels=2, f_maps=32).cuda()
+    unet_model = ResidualUNet3D(4+3, 3, num_levels=2, f_maps=32).cuda()
     print(unet_model)
     train_finetune_net(unet_model, encoder_net, train_dataset, val_dataset, cfg)
     

@@ -1,4 +1,5 @@
 */*pt
+**/void
 torch-ngp/_dump/
 */.ipynb_checkpoints/
 */__pycache__/

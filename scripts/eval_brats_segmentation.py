@@ -1,3 +1,6 @@
+'''
+Given experiment name, evaluate and save the BRATS segmentation results (on the cross-validation val fold)
+'''
 from configs.config import get_cfg_defaults
 import torch
 from torch import nn

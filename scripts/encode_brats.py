@@ -1,5 +1,5 @@
 ''' 
-Script to encode the BRATS dataset into our representation
+Script to encode the BRATS dataset into the InstantNGP representation
 '''
 import argparse
 from dataloaders import BRATS2021Dataset
@@ -15,6 +15,7 @@ from configs.config import get_cfg_defaults
 import os
 
 def _to_cpu(state_dict):
+    # helper to convert the entire state dict into CPU (except things like int, float, str, etc)
     if isinstance(state_dict, torch.Tensor):
         return state_dict.cpu()
     elif isinstance(state_dict, (int, float, str)) or state_dict is None:
@@ -31,6 +32,8 @@ def _to_cpu(state_dict):
             state_dict[k] = _to_cpu(v)
     return state_dict
 
+# parameters include config, root dir for training, output dir to save the representation
+# and an option to optionally skip stage 1 (which is to train the decoder)
 parser = argparse.ArgumentParser(description='Encode the BRATS dataset into our representation')
 parser.add_argument('--cfg_file', type=str, required=True)
 parser.add_argument('--root_dir', type=str, help='Path to the BRATS directory', default="/data/rohitrango/BRATS2021/training/")
@@ -80,9 +83,10 @@ if __name__ == '__main__':
     decoder_optim = torch.optim.Adam(decoder.parameters(), lr=decoder_lr, weight_decay=1e-6)
     encoder_optim_params = dict()
     if not args.skip_stage1:
+        # load an initial number of training images
         for i in tqdm(range(cfg.ENCODE.STAGE1_TRAIN_IMAGES)):
             encoder_params.append(GridEncoder(level_dim=cfg.ENCODE.LEVEL_DIM, desired_resolution=cfg.ENCODE.DESIRED_RESOLUTION, gridtype='tiled', align_corners=True).state_dict())
-        # run this
+        # run the joint training of encoders and decoder to minimize MSE loss
         for epoch in range(cfg.ENCODE.NUM_EPOCHS_STAGE1):
             idxperm = np.random.permutation(cfg.ENCODE.STAGE1_TRAIN_IMAGES) 
             pbar = tqdm(idxperm)

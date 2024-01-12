@@ -375,7 +375,6 @@ class Encoder(nn.Module):
         x = self.basic_module(x)
         return x
 
-
 class Decoder(nn.Module):
     """
     A single module for decoder path consisting of the upsampling layer
@@ -510,7 +509,6 @@ class AbstractUpsampling(nn.Module):
         # upsample the input and return
         return self.upsample(x, output_size)
 
-
 class InterpolateUpsampling(AbstractUpsampling):
     """
     Args:
@@ -526,7 +524,6 @@ class InterpolateUpsampling(AbstractUpsampling):
     @staticmethod
     def _interpolate(x, size, mode):
         return F.interpolate(x, size=size, mode=mode)
-
 
 class TransposeConvUpsampling(AbstractUpsampling):
     """
@@ -547,7 +544,6 @@ class TransposeConvUpsampling(AbstractUpsampling):
         upsample = nn.ConvTranspose3d(in_channels, out_channels, kernel_size=kernel_size, stride=scale_factor,
                                       padding=1)
         super().__init__(upsample)
-
 
 class NoUpsampling(AbstractUpsampling):
     def __init__(self):
@@ -725,7 +721,6 @@ class UNet2D(AbstractUNet):
     2DUnet model from
     `"U-Net: Convolutional Networks for Biomedical Image Segmentation" <https://arxiv.org/abs/1505.04597>`
     """
-
     def __init__(self, in_channels, out_channels, final_sigmoid=True, f_maps=64, layer_order='gcr',
                  num_groups=8, num_levels=4, is_segmentation=True, conv_padding=1, **kwargs):
         super(UNet2D, self).__init__(in_channels=in_channels,
@@ -739,7 +734,6 @@ class UNet2D(AbstractUNet):
                                      is_segmentation=is_segmentation,
                                      conv_padding=conv_padding,
                                      is3d=False)
-
 
 if __name__ == '__main__':
     net = ResidualUNet3D(4 + 3, 3, num_groups=2, num_levels=2, f_maps=32).cuda()

@@ -46,7 +46,6 @@ class TensoRFConv(nn.Module):
         return line_outputs, mat_outputs
 
 
-
 if __name__ == '__main__':
     net = TensoRFEncoder((240, 155, 155), 16).cuda()
     print(net)

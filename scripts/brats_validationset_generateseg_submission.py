@@ -28,7 +28,7 @@ ROOT_DIR = "/data/rohitrango/BRATS2021/val/"
 ENCODER_DIR = "/data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal"
 OUT_DIR = "/data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal_val/"
 NUM_PTS = 100000  # number of points to sample
-EPOCHS = 1000   # epochs to train worker for
+EPOCHS = 2000   # epochs to train worker for
 brats_encoder_lr = 1e-2
 
 @torch.no_grad()
@@ -73,7 +73,7 @@ def create_seg(fold_id, max_folds, experiment_names):
             allseg = allseg + torch.sigmoid(net(encoder, xyzflat).reshape(H, W, D, -1))[..., 1:]  # [H, W, D, C], discard the 0th index which is the background
         allseg = allseg / num_networks
         # get source image
-        source_t1_file = glob(osp.join(ROOT_DIR, "*", enc.split("/")[-1].replace(".pth", "_t1.nii.gz")))[0]
+        source_t1_file = glob(osp.join(ROOT_DIR, "*", enc.split("/")[-1].replace(".pth", "-t1n.nii.gz")))[0]
         source_file = nib.load(source_t1_file)
         source_hdr = source_file.header.copy()
         source_affine = source_file.affine.copy()
@@ -108,8 +108,12 @@ def worker(fold_id, max_folds, experiment_names):
         decoders[i].requires_grad_(False)
 
     for q in dirqueue:
-        files = sorted(glob(q + "/*"))
+        filesn = sorted(glob(q + "/*"))
+        # files = filesn
+        files = [filesn[x] for x in [2, 1, 0, 3]]
         print("Processing {:s}".format(q))
+        for f in files:
+            print(f)
         images = [torch.from_numpy(nib.load(f).get_fdata()).float().to(device) for f in files]
         images = [uniform_normalize(img) for img in images]
         encoders = [GridEncoder(level_dim=2, desired_resolution=196).to(device) for _ in range(4)]
@@ -129,7 +133,7 @@ def worker(fold_id, max_folds, experiment_names):
                 optims[imgid].zero_grad()
                 loss.backward()
                 optims[imgid].step()
-                pbar.set_description("Image {:d} Iter {:d} Loss {:.4f}".format(imgid, iter, loss.item()))
+                pbar.set_description("Image {:d} Iter {:d} Loss {:.6f}".format(imgid, iter, loss.item()))
         # save embedding
         for optim in optims:
             del optim
@@ -147,7 +151,7 @@ if __name__ == '__main__':
     parser.add_argument("--max_folds", type=int, default=1)
     parser.add_argument("--cur_fold", type=int, default=0)
     parser.add_argument('--experiment_names', type=str, required=False, nargs='+', help='Name of the experiments to use')
-    parser.add_argument('--mode', type=str, default="create_embedding", help='Mode of operation (create_embedding, create_segmentation)')
+    parser.add_argument('--mode', type=str, required=True, help='Mode of operation (create_embedding, create_segmentation)')
 
     args = parser.parse_args()
     cur_fold, folds = args.cur_fold, args.max_folds

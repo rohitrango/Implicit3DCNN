@@ -11,6 +11,8 @@ import os
 
 class BRATS2021Dataset(Dataset):
     '''
+    This dataset will provide the data points to train an InstantNGP encoder for the images in the data. 
+
     Images are of size (155, 240, 240)
     sample modes are 'random', 'full' (for random and full sampling of points), 
                     'randomseg', 'fullseg' (for random and full sampling of points and the segmentation mask)
@@ -112,7 +114,12 @@ class BRATS2021Dataset(Dataset):
             
 
 class BRATS2021EncoderSegDataset(Dataset):
-    ''' Dataset for loading the encoded features, coordinates and segmentation '''
+    ''' 
+    Dataset for loading the encoded features, coordinates and segmentation masks.
+
+    The network will feed in the encoded feature codebook directly into the Implicit3DCNN, which will be decoded
+    at the last layer to give the segmentation mask.
+    '''
     def __init__(self, encoded_root_dir, seg_root_dir, train=True, num_folds=5, val_fold=0, shuffle_seed=None, scale_range=0.2, 
                 include_image_volumes=False):
         super().__init__()
@@ -255,7 +262,8 @@ class BRATS2021ImageTranslationDataset(Dataset):
     maximum_intensity: maximum intensity of the output image
     '''
     def __init__(self, image_dir:str, encoder_dir:str, input_modalities: List[int] = [], output_modality: int = 1,
-                 sample_mode: str = 'full', winsorize: float = 100.0, maximum_intensity = np.inf, num_samples: int = 100000) -> None:
+                 sample_mode: str = 'full', winsorize: float = 100.0, maximum_intensity = np.inf, num_samples: int = 100000,
+                 include_images: bool = False) -> None:
         super().__init__()
         self.image_root_dir = image_dir
         self.encoder_root_dir = encoder_dir
@@ -264,6 +272,8 @@ class BRATS2021ImageTranslationDataset(Dataset):
         self.maximum_intensity = maximum_intensity
         self.num_samples = num_samples
         self.isfinite_max = np.isfinite(maximum_intensity)
+        self.include_images = include_images
+
         if output_modality in input_modalities:
             assert False, "Output modality cannot be in input modalities"
         if len(input_modalities) == 0:
@@ -279,7 +289,6 @@ class BRATS2021ImageTranslationDataset(Dataset):
         return len(self.image_dirs)
     
     def __getitem__(self, index):
-        # return self.encoded_files[index], self.image_dirs[index]
         encoder = torch.load(self.encoded_files[index], map_location='cpu')['embeddings']
         N, C = encoder.shape
         Cby4 = C // 4
@@ -291,11 +300,20 @@ class BRATS2021ImageTranslationDataset(Dataset):
         inputs = torch.cat(inputs, dim=1)  # [N, Cby4*len(input_modalities)]
         inputs = inputs / 0.05
 
-        out_image = sorted(glob(os.path.join(self.image_dirs[index], '*.nii.gz')))
-        out_image = list(filter(lambda x: 'seg' not in x, out_image))
-        assert len(out_image) == 4
-        out_image = out_image[self.output_modality]
+        all_images = sorted(glob(os.path.join(self.image_dirs[index], '*.nii.gz')))
+        all_images = list(filter(lambda x: 'seg' not in x, all_images))
+        assert len(all_images) == 4
+        out_image = all_images[self.output_modality]
         out_image = torch.from_numpy(nib.load(out_image).get_fdata()).float()
+
+        # if include_images is true, include the sources too
+        input_images = None
+        if self.include_images:
+            input_images = [all_images[x] for x in self.input_modalities]
+            input_images = [torch.from_numpy(nib.load(f).get_fdata()).float() for f in input_images]
+            input_images = [uniform_normalize(img) for img in input_images]
+            input_images = torch.stack(input_images, dim=0)  # [N_in, H, W, D]
+
         if self.winsorize < 100.0:
             out_image = torch.clamp(out_image, 0, np.percentile(out_image, self.winsorize))
         if self.isfinite_max:
@@ -323,11 +341,11 @@ class BRATS2021ImageTranslationDataset(Dataset):
             'image_name': self.image_dirs[index],
             'encoder_name': self.encoded_files[index],
             'index': index,
+            'input_images': input_images,
         }
 
 
 if __name__ == '__main__':
-
     ### Check for image translation dataset
     dataset = BRATS2021ImageTranslationDataset("/data/rohitrango/BRATS2021/training", \
                                                "/data/rohitrango/Implicit3DCNNTasks/brats2021_unimodal", 
