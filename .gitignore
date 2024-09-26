@@ -1,3 +1,4 @@
+logs
 */*pt
 **/void
 torch-ngp/_dump/
@@ -5,8 +6,13 @@ torch-ngp/_dump/
 */__pycache__/
 **/gridencoder
 **/*ncu-rep
-baselines/*
 Implicit3DCNN.egg-info/
 experiments
 *.txt
 valcheck/
+.vscode
+results/
+**/*code-workspace
+
+networks/kplanes
+baselines/*
